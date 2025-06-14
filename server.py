@@ -1,4 +1,3 @@
-
 import socket
 import os
 import base64
@@ -21,8 +20,6 @@ def handle_file_transfer(filename, data_port):
             request = request_bytes.decode('utf-8')
             print(f"    [Data Port] Received from {addr}: '{request}'")
 
-            # --- 逻辑分离：清晰地处理 GET 和 CLOSE 请求 ---
-
             # 3. 处理 GET 请求
             if f"FILE {filename} GET" in request:
                 parts = request.split()
@@ -31,7 +28,6 @@ def handle_file_transfer(filename, data_port):
 
                 with open(file_path, 'rb') as f:
                     f.seek(start_byte)
-                    # 修正了之前存在的BUG：读取的字节数应该是 (end - start + 1)
                     chunk_data = f.read(end_byte - start_byte + 1)
                     encoded_chunk = base64.b64encode(chunk_data).decode('utf-8')
 
@@ -61,9 +57,6 @@ def start_server():
     """
     host = ''  # 监听所有接口
     port = 51234
-
-    # 为了简单，我们像你原来一样，使用一个固定的数据端口
-    # 在多线程版本中，这里应该是动态分配的
     fixed_data_port = 51235
 
     server_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -90,7 +83,6 @@ def start_server():
                 print(f"[Main Port] Sent OK response. Handing off to transfer function...")
 
                 # 开始文件传输处理。
-                # 注意：在单线程模型中，程序将在这里被“卡住”，直到文件传输完成。
                 handle_file_transfer(filename, fixed_data_port)
 
             else:

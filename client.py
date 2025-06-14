@@ -115,52 +115,52 @@ def download_file(filename, server_host, server_info):
         print(f"[-] Data socket for '{filename}' closed.")
 
 
-
-
-
-
-
+# 精简重构后的 main 函数
 def main():
-    # Create a UDP socket
-    client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    
+    # 创建一个UDP套接字
+    client_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
     # 直接使用 localhost 和固定端口
     server_host = 'localhost'
     server_port = 51234
     server_address = (server_host, server_port)
 
     try:
-        # Get filename from user
+        # 从用户处获取要下载的文件名
         filename = input("Enter the filename to download: ")
-        
-        # Send DOWNLOAD request with retransmission
+
+        # 发送 DOWNLOAD 请求
         message = f"DOWNLOAD {filename}"
         try:
-            response = sendAndReceive(client_socket, message, server_address)
-            print(f"Received: {response[0]}")
+            response_str, _ = sendAndReceive(client_sock, message, server_address)
+            print(f"Received: {response_str}")
 
-            # Parse server response
-            if response[0].startswith("OK"):
-                # Extract file information from response
-                parts = response[0].split()
-                filename = parts[1]
+            # 解析服务器响应
+            if response_str.startswith("OK"):
+                parts = response_str.split()
+                returned_filename = parts[1]
                 size = int(parts[3])
                 port = int(parts[5])
-                print(f"File found: {filename}")
+
+                print(f"File found: {returned_filename}")
                 print(f"Size: {size} bytes")
                 print(f"Port: {port}")
-                
-                # Start file download
-                download_file(filename, server_host, port, size)
-            elif response[0].startswith("ERR"):
+
+                server_info = (size, port)
+                # 2. 使用正确的3个参数来调用 download_file
+                download_file(returned_filename, server_host, server_info)
+
+            elif response_str.startswith("ERR"):
                 print("Error: File not found on server")
+
         except Exception as e:
             print(f"Error during initial request: {str(e)}")
 
     except Exception as e:
         print(f"Error: {str(e)}")
     finally:
-        client_socket.close()
+        client_sock.close()
+
 
 if __name__ == "__main__":
     main()
