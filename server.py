@@ -53,6 +53,10 @@ def start_server():
     这是一个多线程服务器，可以同时处理多个客户端的请求。
     this is a multi-threaded server, it can handle multiple client requests at the same time.
     """
+    # 确保服务器文件目录存在
+    os.makedirs("serverfile", exist_ok=True)
+    print(f"[INFO] Server files directory is ready at: {os.path.abspath('serverfile')}")
+
     host = ''
     port = 51234
     base_data_port = 51235
@@ -107,6 +111,53 @@ def start_server():
                 server_sock.sendto(response.encode('utf-8'), client_addr)
             continue
 
+        elif message.startswith("UPLOAD "):
+            try:
+                # 解析文件名
+                filename = message[7:].strip()
+                file_path = os.path.join("serverfile", filename)
+                
+                # 发送准备就绪消息
+                response = "UPLOAD_READY"
+                server_sock.sendto(response.encode('utf-8'), client_addr)
+                print(f"[Main Port] Ready to receive file: {filename}")
+                print(f"[Main Port] Will save to: {os.path.abspath(file_path)}")
+
+                # 创建或清空目标文件
+                with open(file_path, 'wb') as f:
+                    while True:
+                        # 等待数据块
+                        data_bytes, client_addr = server_sock.recvfrom(4096)  # 使用更大的缓冲区
+                        data_message = data_bytes.decode('utf-8')
+
+                        if data_message == "UPLOAD_DONE":
+                            response = "UPLOAD_COMPLETE"
+                            server_sock.sendto(response.encode('utf-8'), client_addr)
+                            print(f"[Main Port] File upload completed: {filename}")
+                            print(f"[Main Port] File saved at: {os.path.abspath(file_path)}")
+                            break
+
+                        if data_message.startswith("DATA "):
+                            try:
+                                # 解码数据块
+                                encoded_data = data_message[5:]
+                                chunk_data = base64.b64decode(encoded_data)
+                                
+                                # 写入文件
+                                f.write(chunk_data)
+                                
+                                # 发送确认
+                                response = "ACK_DATA"
+                                server_sock.sendto(response.encode('utf-8'), client_addr)
+                                
+                            except Exception as e:
+                                print(f"[Main Port] Error processing data chunk: {e}")
+                                break
+
+            except Exception as e:
+                print(f"[Main Port] Error during file upload: {e}")
+            continue
+
         parts = message.split()
         if len(parts) >= 2 and parts[0] == "DOWNLOAD":
             filename = parts[1]
@@ -135,5 +186,4 @@ def start_server():
 
 
 if __name__ == "__main__":
-    os.makedirs("serverfile", exist_ok=True)
     start_server()

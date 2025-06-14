@@ -113,6 +113,10 @@ def download_file(filename, server_host, server_info):
 
 # 精简重构后的 main 函数-simplified and refactored main function
 def main():
+    # 确保客户端文件目录存在
+    os.makedirs("client_files", exist_ok=True)
+    print("[INFO] Client files directory is ready.")
+
     while True:
         # 创建一个UDP套接字-create a UDP socket
         client_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -139,12 +143,74 @@ def main():
                 continue
 
             # 从用户处获取要下载的文件名
-            filename = input("\nEnter the filename to download (or 'all' to download all files, 'kill' to delete all files, or press Enter to quit): ")
+            filename = input("\nEnter the filename to download (or 'all' to download all files, 'kill' to delete all files, or 'upload <filename>' to upload a file, or press Enter to quit): ")
             
             # 如果用户直接按回车，就退出循环
             if not filename:
                 client_sock.close()  # 退出前关闭本次循环创建的套接字
                 break
+
+            # 处理上传命令
+            if filename.lower().startswith('upload '):
+                try:
+                    upload_filename = filename[7:].strip()  # 获取文件名
+                    local_file_path = os.path.join("client_files", upload_filename)
+                    
+                    if not os.path.exists(local_file_path):
+                        print(f"\n[ERROR] File '{upload_filename}' not found in client_files directory.")
+                        print(f"[INFO] Please place the file in the 'client_files' directory and try again.")
+                        print(f"[INFO] Current client_files directory: {os.path.abspath('client_files')}")
+                        continue
+
+                    # 发送上传请求
+                    upload_request = f"UPLOAD {upload_filename}"
+                    response_str, _ = sendAndReceive(client_sock, upload_request, server_address)
+                    
+                    if response_str != "UPLOAD_READY":
+                        print(f"\n[ERROR] Server not ready for upload: {response_str}")
+                        continue
+
+                    print(f"\n[INFO] Server ready for upload. Starting file transfer...")
+                    print(f"[INFO] Uploading file: {upload_filename}")
+                    print(f"[INFO] From: {os.path.abspath(local_file_path)}")
+                    
+                    # 开始文件传输
+                    with open(local_file_path, 'rb') as f:
+                        file_size = os.path.getsize(local_file_path)
+                        bytes_sent = 0
+                        chunk_size = 1024  # 1KB chunks
+
+                        while True:
+                            chunk = f.read(chunk_size)
+                            if not chunk:
+                                break
+
+                            # 编码数据块
+                            encoded_chunk = base64.b64encode(chunk).decode('utf-8')
+                            data_message = f"DATA {encoded_chunk}"
+                            
+                            # 发送数据块并等待确认
+                            response_str, _ = sendAndReceive(client_sock, data_message, server_address)
+                            
+                            if response_str != "ACK_DATA":
+                                print(f"\n[ERROR] Server did not acknowledge data chunk: {response_str}")
+                                break
+
+                            bytes_sent += len(chunk)
+                            progress = (bytes_sent / file_size) * 100
+                            print(f"\rProgress: {progress:.2f}% ({bytes_sent}/{file_size} bytes)", end='')
+
+                    # 发送完成消息
+                    response_str, _ = sendAndReceive(client_sock, "UPLOAD_DONE", server_address)
+                    
+                    if response_str == "UPLOAD_COMPLETE":
+                        print(f"\n[SUCCESS] File '{upload_filename}' uploaded successfully!")
+                    else:
+                        print(f"\n[WARNING] Unexpected final response: {response_str}")
+
+                except Exception as e:
+                    print(f"\n[ERROR] Upload failed: {str(e)}")
+                continue
 
             # 处理 'kill' 命令
             if filename.lower() == 'kill':
