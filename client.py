@@ -5,17 +5,35 @@ import time
 
 def sendAndReceive(socket, message, server_address, initial_timeout=1.0, max_retries=5):
     timeout = initial_timeout
-    for _ in range(max_retries):
+    retries = 0
+
+    while retries < max_retries:
         try:
+            socket.settimeout(timeout)
+
             socket.sendto(message.encode('utf-8'), server_address)
-            response, _ = socket.recvfrom(1024)
-            return response.decode('utf-8')
+            print(f"Sent: {message}")
+
+
+
+            response, addr= socket.recvfrom(65535)
+            print(f"Received: {response.decode('utf-8')}")
+            return response.decode('utf-8'), addr
         
         except socket.timeout:
-            timeout *= 2
-            if timeout > 10:
+            retries += 1
+            if retries < max_retries:
+                timeout *= 2
+                if timeout > 10:
+                    raise socket.timeout("Max retries reached")
+                time.sleep(timeout)
+            else:
                 raise socket.timeout("Max retries reached")
-            time.sleep(timeout)
+
+    
+
+            
+
     raise socket.timeout("Max retries reached")
 
 def download_file(filename, server_host, data_port, file_size):
