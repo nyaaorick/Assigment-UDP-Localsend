@@ -3,6 +3,8 @@ import os
 import base64
 import time
 
+# Create client_files directory at program start
+os.makedirs("client_files", exist_ok=True)
 
 def sendAndReceive(sock, message, server_address, timeout=1.0, max_retries=5):
     """
@@ -55,8 +57,6 @@ def download_file(filename, server_host, server_info):
 
     # print(f"\n[+] Starting download for '{filename}' from {server_data_address}...")
 
-    # 确保本地目录存在
-    os.makedirs("client_files", exist_ok=True)
     # 使用 os.path.basename() 来移除任何路径信息，确保文件直接保存在 client_files 根目录
     local_file_path = os.path.join("client_files", os.path.basename(filename))
 
@@ -113,14 +113,19 @@ def download_file(filename, server_host, server_info):
 
 
 def main():
-    # 确保客户端文件目录存在-ensure the client files directory exists
-    os.makedirs("client_files", exist_ok=True)
-    # print("[INFO] Client files directory is ready.")
-
     # 在循环外部创建唯一的套接字-create the unique socket outside the loop
     client_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     
-    server_host = 'localhost'
+    # 允许用户在程序开始时输入主机地址
+    user_input_host = input("Enter server host (press Enter or type 'local' for localhost): ").strip()
+    
+    if user_input_host.lower() == 'local' or not user_input_host:
+        server_host = 'localhost'
+    else:
+        server_host = user_input_host
+    
+    print(f"[INFO] Server host set to: {server_host}")
+
     server_port = 51234
     server_address = (server_host, server_port)
 
