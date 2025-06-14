@@ -57,7 +57,8 @@ def download_file(filename, server_host, server_info):
 
     # 确保本地目录存在
     os.makedirs("client_files", exist_ok=True)
-    local_file_path = os.path.join("client_files", filename)
+    # 使用 os.path.basename() 来移除任何路径信息，确保文件直接保存在 client_files 根目录
+    local_file_path = os.path.join("client_files", os.path.basename(filename))
 
     bytes_received = 0
     chunk_size = 1024 #1kb=1024bytes
