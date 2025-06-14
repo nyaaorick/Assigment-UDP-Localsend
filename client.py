@@ -3,21 +3,21 @@ import os
 import base64
 import time
 
-def sendAndReceive(socket, message, server_address, initial_timeout=1.0, max_retries=5):
+def sendAndReceive(sock, message, server_address, initial_timeout=1.0, max_retries=5):
     timeout = initial_timeout
     retries = 0
     
     while retries < max_retries:
         try:
             # Set socket timeout
-            socket.settimeout(timeout)
+            sock.settimeout(timeout)
             
             # Send message
-            socket.sendto(message.encode('utf-8'), server_address)
+            sock.sendto(message.encode('utf-8'), server_address)
             print(f"Sent: {message} (Attempt {retries + 1})")
             
             # Wait for response
-            response, addr = socket.recvfrom(65535)  # Increased buffer size for base64 data
+            response, addr = sock.recvfrom(65535)  # Increased buffer size for base64 data
             return response.decode('utf-8'), addr
             
         except socket.timeout:
@@ -27,7 +27,7 @@ def sendAndReceive(socket, message, server_address, initial_timeout=1.0, max_ret
                 timeout *= 2
                 print(f"Timeout occurred. Retrying with {timeout:.1f}s timeout...")
             else:
-                raise Exception(f"Failed after {max_retries} attempts. Server not responding.")
+                raise socket.timeout(f"Failed after {max_retries} attempts. Server not responding.")
 
 def download_file(filename, server_host, data_port, file_size):
     # Create a new socket for data transfer
@@ -72,6 +72,7 @@ def download_file(filename, server_host, data_port, file_size):
                     print(f"Error receiving chunk: {str(e)}")
                     break
         
+        # Send close request with retransmission
         try:
             close_request = f"FILE {filename} CLOSE"
             response = sendAndReceive(data_socket, close_request, server_address)
@@ -100,7 +101,7 @@ def main():
         # Get filename from user
         filename = input("Enter the filename to download: ")
         
-        # Send DOWNLOAD request to server
+        # Send DOWNLOAD request with retransmission
         message = f"DOWNLOAD {filename}"
         try:
             response = sendAndReceive(client_socket, message, server_address)
