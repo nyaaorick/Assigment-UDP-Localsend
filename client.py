@@ -117,24 +117,25 @@ def main():
     os.makedirs("client_files", exist_ok=True)
     print("[INFO] Client files directory is ready.")
 
+    # --- 核心修改 1: 在循环外部创建唯一的套接字 ---
+    client_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    
+    server_host = 'localhost'
+    server_port = 51234
+    server_address = (server_host, server_port)
+
+    # 开始会话循环
     while True:
-        # 创建一个UDP套接字-create a UDP socket
-        client_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-
-        # 直接使用 localhost 和固定端口-i use localhost and a fixed port, i will change it later to fit threading
-        server_host = 'localhost'
-        server_port = 51234
-        server_address = (server_host, server_port)
-
         try:
             # 获取服务器上的文件列表
+            files = [] # 初始化文件列表为空
             try:
                 response_str, _ = sendAndReceive(client_sock, "LIST_FILES", server_address)
                 if response_str.startswith("OK"):
                     files = response_str.split()[1:] 
-                    print("\nAvailable files on server:")
-                    for i, filename in enumerate(files, 1):
-                        print(f"{i}. {filename}")
+                    print("\nAvailable entries on server:")
+                    print(" ".join(files) if files else "(empty)")
+                    print("-" * 50)
                 else:
                     print("Error: Could not get file list from server")
                     continue
@@ -142,13 +143,25 @@ def main():
                 print(f"Error getting file list: {str(e)}")
                 continue
 
-            # 从用户处获取要下载的文件名
-            filename = input("\nEnter the filename to download (or 'all' to download all files, 'kill' to delete all files, or 'upload <filename>' to upload a file, or press Enter to quit): ")
+            # 从用户处获取命令
+            filename = input("\nEnter command (e.g. 'cd <dir>', 'all', 'kill', 'upload <file>', <filename> to download), or press Enter to quit: ")
             
             # 如果用户直接按回车，就退出循环
             if not filename:
-                client_sock.close()  # 退出前关闭本次循环创建的套接字
                 break
+
+            # 处理 cd 命令
+            if filename.lower().startswith('cd '):
+                # 直接将用户的cd命令格式化后发送给服务器
+                command_to_send = "CD " + filename.split(' ', 1)[1]
+                try:
+                    response_str, _ = sendAndReceive(client_sock, command_to_send, server_address)
+                    # 打印服务器的响应，例如 "CD_OK Now in /folder" 或 "CD_ERR ..."
+                    print(f"Server: {response_str}")
+                except Exception as e:
+                    print(f"\n[ERROR] Failed to send cd command: {str(e)}")
+                # 处理完cd后，循环会重新开始，并自动获取新目录下的列表
+                continue
 
             # 处理上传命令
             if filename.lower().startswith('upload '):
@@ -234,6 +247,10 @@ def main():
                 
                 print(f"\nStarting batch download of {len(files)} files...")
                 for file_to_download in files:
+                    # 跳过目录（以/结尾的项）
+                    if file_to_download.endswith('/'):
+                        continue
+                        
                     print(f"\n{'='*50}")
                     print(f"Downloading: {file_to_download}")
                     print(f"{'='*50}")
@@ -296,10 +313,12 @@ def main():
 
         except Exception as e:
             print(f"Error: {str(e)}")
-        finally:
-            client_sock.close()
-            print("\n" + "="*50 + "\n")  # 添加分隔线使输出更清晰
+
+    # --- 核心修改 2: 在循环结束后，关闭唯一的套接字 ---
+    print("\nClient session finished. Exiting.")
+    client_sock.close()
 
 
 if __name__ == "__main__":
+    import sys
     main()
