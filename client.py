@@ -20,7 +20,7 @@ def sendAndReceive(sock, message, server_address, timeout=1.0, max_retries=5):
             sock.settimeout(timeout)
 
             # 发送请求
-            print(f"--> [Attempt {attempt + 1}/{max_retries}] Sending to {server_address}: '{message}'")
+            # print(f"--> [Attempt {attempt + 1}/{max_retries}] Sending to {server_address}: '{message}'")
             sock.sendto(message.encode('utf-8'), server_address)
 
             # 等待响应
@@ -53,7 +53,7 @@ def download_file(filename, server_host, server_info):
     # 为数据传输创建一个新的UDP套接字
     data_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-    print(f"\n[+] Starting download for '{filename}' from {server_data_address}...")
+    # print(f"\n[+] Starting download for '{filename}' from {server_data_address}...")
 
     # 确保本地目录存在
     os.makedirs("client_files", exist_ok=True)
@@ -87,48 +87,47 @@ def download_file(filename, server_host, server_info):
                     bytes_received += len(chunk_data)
 
                     progress = (bytes_received / file_size) * 100
-                    print(f"    Received chunk. Total: {bytes_received}/{file_size} bytes ({progress:.2f}%)")
+                    print(f"\rProgress: {progress:.2f}% ({bytes_received}/{file_size} bytes)", end='')
                 else:
                     print(f"!!! Error: Unexpected data response: {response_str}")
                     break
 
         # 结束流程：客户端下载完成后，发送 `FILE <filename> CLOSE` 消息-end the process: after the client downloads the file, send the `FILE <filename> CLOSE` message
-        print(f"[+] File download finished. Sending CLOSE request.")
+        # print(f"[+] File download finished. Sending CLOSE request.")
         close_request = f"FILE {filename} CLOSE"
         response_str, _ = sendAndReceive(data_sock, close_request, server_data_address)
 
         # 确认服务器的最终响应-confirm the final response from the server
         if f"FILE {filename} CLOSE_OK" in response_str:
-            print(f"[SUCCESS] Transfer for '{filename}' completed successfully.")
+            print(f"\n[SUCCESS] Transfer for '{filename}' completed successfully.")
         else:
-            print(f"[WARNING] Server gave an unexpected response to CLOSE: {response_str}")
+            print(f"\n[WARNING] Server gave an unexpected response to CLOSE: {response_str}")
 
     except Exception as e:
         print(f"!!! A critical error occurred during file transfer for '{filename}': {e}")
     finally:
         # 确保数据套接字总是被关闭-guarantee that the data socket is always closed
         data_sock.close()
-        print(f"[-] Data socket for '{filename}' closed.")
+        # print(f"[-] Data socket for '{filename}' closed.")
 
 
-# 精简重构后的 main 函数-simplified and refactored main function
 def main():
-    # 确保客户端文件目录存在
+    # 确保客户端文件目录存在-ensure the client files directory exists
     os.makedirs("client_files", exist_ok=True)
-    print("[INFO] Client files directory is ready.")
+    # print("[INFO] Client files directory is ready.")
 
-    # --- 核心修改 1: 在循环外部创建唯一的套接字 ---
+    # 在循环外部创建唯一的套接字-create the unique socket outside the loop
     client_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     
     server_host = 'localhost'
     server_port = 51234
     server_address = (server_host, server_port)
 
-    # 开始会话循环
+    # 开始会话循环-start the session loop
     while True:
         try:
-            # 获取服务器上的文件列表
-            files = [] # 初始化文件列表为空
+            # 获取服务器上的文件列表-get the file list on server
+            files = [] # 初始化文件列表为空-initialize the file list as empty
             try:
                 response_str, _ = sendAndReceive(client_sock, "LIST_FILES", server_address)
                 if response_str.startswith("OK"):
@@ -144,14 +143,14 @@ def main():
                 continue
 
             filename = input("""
-            *！COMMAND MENU ! * What Can I Do For You?
+            *！COMMAND MENU ! ^^^^^check the available entries on server^^^^
             ********************************************
             * <filename>          - Download a file by entering its name
             * cd <folder>         - Change to the specified directory (e.g., cd my_files)
             * cd ..               - Go back to the parent directory
             * all                 - Download all files in the current directory
             * upload <filename>   - Upload a file to the server
-            * kill                - Terminate the client session
+            * kill                - kill every files on server
             * (press enter)       - Exit the client
 
             Enter command: """)
@@ -193,9 +192,9 @@ def main():
                         print(f"\n[ERROR] Server not ready for upload: {response_str}")
                         continue
 
-                    print(f"\n[INFO] Server ready for upload. Starting file transfer...")
-                    print(f"[INFO] Uploading file: {upload_filename}")
-                    print(f"[INFO] From: {os.path.abspath(local_file_path)}")
+                    # print(f"\n[INFO] Server ready for upload. Starting file transfer...")
+                    # print(f"[INFO] Uploading file: {upload_filename}")
+                    # print(f"[INFO] From: {os.path.abspath(local_file_path)}")
                     
                     # 开始文件传输
                     with open(local_file_path, 'rb') as f:
@@ -255,21 +254,21 @@ def main():
                     print("No files available to download.")
                     continue
                 
-                print(f"\nStarting batch download of {len(files)} files...")
+                # print(f"\nStarting batch download of {len(files)} files...")
                 for file_to_download in files:
                     # 跳过目录（以/结尾的项）
                     if file_to_download.endswith('/'):
                         continue
                         
-                    print(f"\n{'='*50}")
-                    print(f"Downloading: {file_to_download}")
-                    print(f"{'='*50}")
+                    # print(f"\n{'='*50}")
+                    # print(f"Downloading: {file_to_download}")
+                    # print(f"{'='*50}")
                     
                     # 发送 DOWNLOAD 请求
                     message = f"DOWNLOAD {file_to_download}"
                     try:
                         response_str, _ = sendAndReceive(client_sock, message, server_address)
-                        print(f"Received: {response_str}")
+                        # print(f"Received: {response_str}")
 
                         # 解析服务器响应
                         if response_str.startswith("OK"):
@@ -278,9 +277,9 @@ def main():
                             size = int(parts[3])
                             port = int(parts[5])
 
-                            print(f"File found: {returned_filename}")
-                            print(f"Size: {size} bytes")
-                            print(f"Port: {port}")
+                            # print(f"File found: {returned_filename}")
+                            # print(f"Size: {size} bytes")
+                            # print(f"Port: {port}")
 
                             server_info = (size, port)
                             download_file(returned_filename, server_host, server_info)
@@ -299,7 +298,7 @@ def main():
             message = f"DOWNLOAD {filename}"
             try:
                 response_str, _ = sendAndReceive(client_sock, message, server_address)
-                print(f"Received: {response_str}")
+                # print(f"Received: {response_str}")
 
                 # 解析服务器响应
                 if response_str.startswith("OK"):
@@ -308,9 +307,9 @@ def main():
                     size = int(parts[3])
                     port = int(parts[5])
 
-                    print(f"File found: {returned_filename}")
-                    print(f"Size: {size} bytes")
-                    print(f"Port: {port}")
+                    # print(f"File found: {returned_filename}")
+                    # print(f"Size: {size} bytes")
+                    # print(f"Port: {port}")
 
                     server_info = (size, port)
                     download_file(returned_filename, server_host, server_info)
@@ -324,7 +323,7 @@ def main():
         except Exception as e:
             print(f"Error: {str(e)}")
 
-    # --- 核心修改 2: 在循环结束后，关闭唯一的套接字 ---
+    # 在循环结束后，关闭唯一的套接字-close the unique socket after the loop
     print("\nClient session finished. Exiting.")
     client_sock.close()
 
