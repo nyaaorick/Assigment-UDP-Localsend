@@ -8,22 +8,32 @@
 All file operations are contained within specific directories: `serverfile` on the server and `client_files` on the client.
 
 
-
 ## How to Use
 
-1.  Run the client script from your terminal:
 
-    ```bash
-    python server.py
-    ```
+## Examples
 
-2.  Run the client script from your terminal:
+**start server**
 
-    ```bash
-    python client.py
-    ```
+```bash
+python3 server.py
 
+or
 
+python3 server.py 8888
+```
+
+**start client**
+
+```bash
+
+python3 client.py localhost 8888
+
+or
+
+python3 client.py
+in this case you will need enter host next step
+```
 
 ## Command List
 
@@ -37,5 +47,7 @@ The client accepts the following commands:
 | `all`             | Download all files in the current remote directory.                          |
 | `upload <filename>` | Upload a file from your local machine to the server's current directory.   |
 | `kill`            | **DANGER:** Deletes **every file** on the folder.                            |
+| `supload`         | super upload make you upload a folder!                                       |
 | `(press enter)`   | Exit the client application.                                                 |
+
 
