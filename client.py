@@ -2,6 +2,7 @@ import socket
 import os
 import base64
 import time
+import sys
 
 # Create client_files directory at program start
 os.makedirs("client_files", exist_ok=True)
@@ -280,20 +281,46 @@ def handle_super_upload(sock, server_address, local_folder_path):
 
 
 def main():
-    # 在循环外部创建唯一的套接字-create the unique socket outside the loop
+    server_host = None
+    server_port = 51234  # 默认端口
+
+    # 情况 1: 用户通过命令行提供了主机和端口
+    if len(sys.argv) == 3:
+        server_host = sys.argv[1]
+        try:
+            server_port = int(sys.argv[2])
+        except ValueError:
+            print(f"Error: Invalid port '{sys.argv[2]}'. Port must be a number.")
+            sys.exit(1)
+        print(f"[INFO] Server address from command line: {server_host}:{server_port}")
+
+    # 情况 2: 用户没有提供任何参数，将进入交互模式
+    elif len(sys.argv) == 1:
+        # 此处不执行任何操作，让代码自然向下执行到交互输入部分
+        pass
+
+    # 情况 3: 参数数量错误
+    else:
+        print("Usage: python3 client.py [hostname] [port]")
+        print("Or run without arguments for interactive mode.")
+        sys.exit(1)
+    # --- 结束新的最小化修改 ---
+
+    # 在循环外部创建唯一的套接字
     client_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     
-    # 允许用户在程序开始时输入主机地址
-    user_input_host = input("Enter server host (press Enter or type 'local' for localhost): ").strip()
-    
-    if user_input_host.lower() == 'local' or not user_input_host:
-        server_host = 'localhost'
-    else:
-        server_host = user_input_host
-    
-    print(f"[INFO] Server host set to: {server_host}")
+    #这段交互逻辑现在只在 server_host 未被命令行赋值时执行
+    if server_host is None:
+        user_input_host = input("Enter server host (press Enter or type 'local' for localhost): ").strip()
+        
+        if user_input_host.lower() == 'local' or not user_input_host:
+            server_host = 'localhost'
+        else:
+            server_host = user_input_host
+        
+        print(f"[INFO] Server address set to: {server_host}:{server_port}")
 
-    server_port = 51234
+    # 使用最终确定的端口和主机名
     server_address = (server_host, server_port)
 
     # 开始会话循环-start the session loop
@@ -457,5 +484,4 @@ def main():
 
 
 if __name__ == "__main__":
-    import sys
     main()
