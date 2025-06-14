@@ -1,14 +1,29 @@
 import socket
 import os
 import base64
+import time
+
+def sendAndReceive(socket, message, server_address, initial_timeout=1.0, max_retries=5):
+    timeout = initial_timeout
+    for _ in range(max_retries):
+        try:
+            socket.sendto(message.encode('utf-8'), server_address)
+            response, _ = socket.recvfrom(1024)
+            return response.decode('utf-8')
+        
+        except socket.timeout:
+            timeout *= 2
+            if timeout > 10:
+                raise socket.timeout("Max retries reached")
+            time.sleep(timeout)
+    raise socket.timeout("Max retries reached")
 
 def download_file(filename, server_host, data_port, file_size):
     # Create a new socket for data transfer
     data_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     server_address = (server_host, data_port)
     
-    # Create clientfile directory if it doesn't exist
-    os.makedirs("clientfile", exist_ok=True)
+    #read file from serverfile
     file_path = os.path.join("clientfile", filename)
     
     chunk_size = 1024  # 1KB chunks
