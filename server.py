@@ -6,7 +6,7 @@ import threading
 
 def handle_file_transfer(filename, data_port):
     """
-    处理单个文件的完整传输流程（在新端口上）
+    处理单个文件的完整传输流程（在新端口上）-handle the complete transfer process of a single file (on a new port)
     """
     data_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     data_sock.bind(('', data_port))
@@ -51,6 +51,7 @@ def start_server():
     """
     启动主服务器，监听 DOWNLOAD 请求。
     这是一个多线程服务器，可以同时处理多个客户端的请求。
+    this is a multi-threaded server, it can handle multiple client requests at the same time.
     """
     host = ''
     port = 51234
@@ -62,10 +63,18 @@ def start_server():
 
     while True:
         print("\n======================================================\n"
-              "Waiting for a new DOWNLOAD request on the main port...")
+              "Waiting for a new request on the main port...")
         message_bytes, client_addr = server_sock.recvfrom(1024)
         message = message_bytes.decode('utf-8')
         print(f"[Main Port] Received from {client_addr}: '{message}'")
+
+        if message == "LIST_FILES":
+            # 获取serverfile目录中的所有文件
+            files = os.listdir("serverfile")
+            response = "OK " + " ".join(files)
+            server_sock.sendto(response.encode('utf-8'), client_addr)
+            print(f"[Main Port] Sent file list: {files}")
+            continue
 
         parts = message.split()
         if len(parts) >= 2 and parts[0] == "DOWNLOAD":

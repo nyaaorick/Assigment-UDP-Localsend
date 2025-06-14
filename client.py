@@ -122,8 +122,21 @@ def main():
     server_address = (server_host, server_port)
 
     try:
+        # 获取服务器上的文件列表
+        try:
+            response_str, _ = sendAndReceive(client_sock, "LIST_FILES", server_address)
+            if response_str.startswith("OK"):
+                files = response_str.split()[1:]  # 去掉"OK"前缀
+                print("\nAvailable files on server:")
+                for i, filename in enumerate(files, 1):
+                    print(f"{i}. {filename}")
+            else:
+                print("Error: Could not get file list from server")
+        except Exception as e:
+            print(f"Error getting file list: {str(e)}")
+
         # 从用户处获取要下载的文件名
-        filename = input("Enter the filename to download: ")
+        filename = input("\nEnter the filename to download: ")
 
         # 发送 DOWNLOAD 请求
         message = f"DOWNLOAD {filename}"
@@ -143,7 +156,6 @@ def main():
                 print(f"Port: {port}")
 
                 server_info = (size, port)
-                # 2. 使用正确的3个参数来调用 download_file
                 download_file(returned_filename, server_host, server_info)
 
             elif response_str.startswith("ERR"):
