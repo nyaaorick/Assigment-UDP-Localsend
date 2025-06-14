@@ -34,7 +34,8 @@ def download_file(filename, server_host, data_port, file_size):
     data_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     server_address = (server_host, data_port)
     
-    #read file from serverfile
+    # Create clientfile directory if it doesn't exist
+    os.makedirs("clientfile", exist_ok=True)
     file_path = os.path.join("clientfile", filename)
     
     chunk_size = 1024  # 1KB chunks
@@ -49,40 +50,37 @@ def download_file(filename, server_host, data_port, file_size):
                 
                 # Request chunk
                 request = f"FILE {filename} GET START {start} END {end}"
-                data_socket.sendto(request.encode('utf-8'), server_address)
-                print(f"Requesting chunk: {start}-{end}")
-                
-                # Receive chunk
-                response, _ = data_socket.recvfrom(65535)  # Increased buffer size for base64 data
-                response = response.decode('utf-8')
-                
-                # Parse response
-                parts = response.split()
-                if len(parts) >= 8 and parts[0] == "FILE" and parts[2] == "OK":
-                    # Extract and decode data
-                    data_start = response.find("DATA ") + 5
-                    encoded_data = response[data_start:]
-                    chunk_data = base64.b64decode(encoded_data)
+                try:
+                    response = sendAndReceive(data_socket, request, server_address)
                     
-                    # Write chunk to file
-                    f.write(chunk_data)
-                    bytes_received += len(chunk_data)
-                    print(f"Received {len(chunk_data)} bytes")
-                else:
-                    print(f"Unexpected response: {response}")
+                    # Parse response
+                    parts = response[0].split()
+                    if len(parts) >= 8 and parts[0] == "FILE" and parts[2] == "OK":
+                        # Extract and decode data
+                        data_start = response[0].find("DATA ") + 5
+                        encoded_data = response[0][data_start:]
+                        chunk_data = base64.b64decode(encoded_data)
+                        
+                        # Write chunk to file
+                        f.write(chunk_data)
+                        bytes_received += len(chunk_data)
+                        print(f"Received {len(chunk_data)} bytes")
+                    else:
+                        print(f"Unexpected response: {response[0]}")
+                        break
+                except Exception as e:
+                    print(f"Error receiving chunk: {str(e)}")
                     break
         
-        # Send close request
-        close_request = f"FILE {filename} CLOSE"
-        data_socket.sendto(close_request.encode('utf-8'), server_address)
-        
-        # Wait for close confirmation
-        response, _ = data_socket.recvfrom(1024)
-        response = response.decode('utf-8')
-        if response == f"FILE {filename} CLOSE_OK":
-            print("File transfer completed successfully")
-        else:
-            print("Unexpected response to close request")
+        try:
+            close_request = f"FILE {filename} CLOSE"
+            response = sendAndReceive(data_socket, close_request, server_address)
+            if response[0] == f"FILE {filename} CLOSE_OK":
+                print("File transfer completed successfully")
+            else:
+                print("Unexpected response to close request")
+        except Exception as e:
+            print(f"Error during close: {str(e)}")
             
     except Exception as e:
         print(f"Error during file transfer: {str(e)}")
