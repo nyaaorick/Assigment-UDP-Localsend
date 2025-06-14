@@ -112,6 +112,77 @@ def download_file(filename, server_host, server_info):
         # print(f"[-] Data socket for '{filename}' closed.")
 
 
+def handle_upload(sock, server_address, command_input):
+    """
+    模块化处理文件上传的函数，智能判断是文件路径还是文件名。
+    :param sock: 用于通信的套接字
+    :param server_address: 服务器地址
+    :param command_input: 用户输入的'upload'命令后的部分 (可能是文件名或路径)
+    """
+    local_file_path = command_input.strip().strip('\'"') # 清理输入
+    final_path_to_open = ""
+
+    # 智能判断路径：首先检查是否是直接可用的文件路径
+    if os.path.isfile(local_file_path):
+        final_path_to_open = local_file_path
+        print(f"[INFO] 检测到直接文件路径，准备上传: {final_path_to_open}")
+    else:
+        # 如果不是直接路径，则尝试在 'client_files' 目录中寻找 (旧方法)
+        path_in_client_files = os.path.join("client_files", local_file_path)
+        if os.path.isfile(path_in_client_files):
+            final_path_to_open = path_in_client_files
+            print(f"[INFO] 在 client_files 目录中找到文件，准备上传: {final_path_to_open}")
+
+    # 如果两种方式都找不到文件，则报错退出
+    if not final_path_to_open:
+        print(f"\n[错误] 文件未找到。'{local_file_path}' 不是一个有效的文件路径，在 'client_files' 目录中也找不到该文件。")
+        return
+
+    try:
+        # 从最终确定的路径中提取纯文件名用于服务器
+        upload_filename_for_server = os.path.basename(final_path_to_open)
+
+        # 发送上传请求
+        upload_request = f"UPLOAD {upload_filename_for_server}"
+        response_str, _ = sendAndReceive(sock, upload_request, server_address)
+        
+        if response_str != "UPLOAD_READY":
+            print(f"\n[错误] 服务器未准备好接收上传: {response_str}")
+            return
+
+        # 使用最终确定的路径进行文件传输
+        with open(final_path_to_open, 'rb') as f:
+            file_size = os.path.getsize(final_path_to_open)
+            bytes_sent = 0
+            chunk_size = 1024
+
+            while True:
+                chunk = f.read(chunk_size)
+                if not chunk: break
+                
+                encoded_chunk = base64.b64encode(chunk).decode('utf-8')
+                data_message = f"DATA {encoded_chunk}"
+                
+                response_str, _ = sendAndReceive(sock, data_message, server_address)
+                if response_str != "ACK_DATA":
+                    print(f"\n[错误] 服务器未确认数据块: {response_str}")
+                    break
+                
+                bytes_sent += len(chunk)
+                progress = (bytes_sent / file_size) * 100
+                print(f"\r上传进度: {progress:.2f}% ({bytes_sent}/{file_size} bytes)", end='')
+
+        # 发送完成消息
+        response_str, _ = sendAndReceive(sock, "UPLOAD_DONE", server_address)
+        if response_str == "UPLOAD_COMPLETE":
+            print(f"\n[成功] 文件 '{upload_filename_for_server}' 上传成功!")
+        else:
+            print(f"\n[警告] 收到意外的最终响应: {response_str}")
+
+    except Exception as e:
+        print(f"\n[错误] 上传失败: {str(e)}")
+
+
 def main():
     # 在循环外部创建唯一的套接字-create the unique socket outside the loop
     client_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -180,65 +251,11 @@ def main():
 
             # 处理上传命令
             if filename.lower().startswith('upload '):
-                try:
-                    upload_filename = filename[7:].strip()  # 获取文件名
-                    local_file_path = os.path.join("client_files", upload_filename)
-                    
-                    if not os.path.exists(local_file_path):
-                        print(f"\n[ERROR] File '{upload_filename}' not found in client_files directory.")
-                        print(f"[INFO] Please place the file in the 'client_files' directory and try again.")
-                        print(f"[INFO] Current client_files directory: {os.path.abspath('client_files')}")
-                        continue
-
-                    # 发送上传请求
-                    upload_request = f"UPLOAD {upload_filename}"
-                    response_str, _ = sendAndReceive(client_sock, upload_request, server_address)
-                    
-                    if response_str != "UPLOAD_READY":
-                        print(f"\n[ERROR] Server not ready for upload: {response_str}")
-                        continue
-
-                    # print(f"\n[INFO] Server ready for upload. Starting file transfer...")
-                    # print(f"[INFO] Uploading file: {upload_filename}")
-                    # print(f"[INFO] From: {os.path.abspath(local_file_path)}")
-                    
-                    # 开始文件传输
-                    with open(local_file_path, 'rb') as f:
-                        file_size = os.path.getsize(local_file_path)
-                        bytes_sent = 0
-                        chunk_size = 1024  # 1KB chunks
-
-                        while True:
-                            chunk = f.read(chunk_size)
-                            if not chunk:
-                                break
-
-                            # 编码数据块
-                            encoded_chunk = base64.b64encode(chunk).decode('utf-8')
-                            data_message = f"DATA {encoded_chunk}"
-                            
-                            # 发送数据块并等待确认
-                            response_str, _ = sendAndReceive(client_sock, data_message, server_address)
-                            
-                            if response_str != "ACK_DATA":
-                                print(f"\n[ERROR] Server did not acknowledge data chunk: {response_str}")
-                                break
-
-                            bytes_sent += len(chunk)
-                            progress = (bytes_sent / file_size) * 100
-                            print(f"\rProgress: {progress:.2f}% ({bytes_sent}/{file_size} bytes)", end='')
-
-                    # 发送完成消息
-                    response_str, _ = sendAndReceive(client_sock, "UPLOAD_DONE", server_address)
-                    
-                    if response_str == "UPLOAD_COMPLETE":
-                        print(f"\n[SUCCESS] File '{upload_filename}' uploaded successfully!")
-                    else:
-                        print(f"\n[WARNING] Unexpected final response: {response_str}")
-
-                except Exception as e:
-                    print(f"\n[ERROR] Upload failed: {str(e)}")
-                continue
+                # 提取 'upload ' 后面的所有内容
+                path_or_filename_input = filename.split(' ', 1)[1]
+                # 调用新的模块化函数处理上传
+                handle_upload(client_sock, server_address, path_or_filename_input)
+                continue # 处理完后继续下一次循环
 
             # 处理 'kill' 命令
             if filename.lower() == 'kill':
