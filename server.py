@@ -4,8 +4,8 @@ import base64
 
 def handle_file_transfer(filename, data_port):
     # Create a new socket for data transfer
-    data_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    data_socket.bind(('localhost', data_port))
+    data_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    data_sock.bind(('localhost', data_port))
     print(f"Data transfer socket listening on port {data_port}")
 
     file_path = os.path.join("serverfile", filename)
@@ -15,14 +15,14 @@ def handle_file_transfer(filename, data_port):
     while True:
         try:
             # Receive file request
-            data, addr = data_socket.recvfrom(1024)
+            data, addr = data_sock.recvfrom(1024)
             request = data.decode('utf-8')
             print(f"Received request: {request}")
 
             if request.startswith("FILE CLOSE"):
                 # Handle close request
                 response = f"FILE {filename} CLOSE_OK"
-                data_socket.sendto(response.encode('utf-8'), addr)
+                data_sock.sendto(response.encode('utf-8'), addr)
                 break
 
             # Parse the request
@@ -39,13 +39,13 @@ def handle_file_transfer(filename, data_port):
 
                 # Send the chunk
                 response = f"FILE {filename} OK START {start} END {end} DATA {encoded_chunk}"
-                data_socket.sendto(response.encode('utf-8'), addr)
+                data_sock.sendto(response.encode('utf-8'), addr)
 
         except Exception as e:
             print(f"Error in file transfer: {str(e)}")
             break
 
-    data_socket.close()
+    data_sock.close()
 
 def start_server():
     # 直接使用 localhost 和固定端口
@@ -54,16 +54,16 @@ def start_server():
     data_port = 51235  # data transfer port
 
     # Create a UDP socket
-    server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    server_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
     # Bind the socket to the address and port
-    server_socket.bind((host, port))
+    server_sock.bind((host, port))
 
     print(f"Server listening on {host}:{port}")
 
     while True:
         # Receive data from client
-        data, addr = server_socket.recvfrom(1024)
+        data, addr = server_sock.recvfrom(1024)
         message = data.decode()
         print(f"Received message from {addr}: {message}")
 
@@ -77,7 +77,7 @@ def start_server():
                 # File exists, send OK response with file info
                 file_size = os.path.getsize(file_path)
                 response = f"OK {filename} SIZE {file_size} PORT {data_port}"
-                server_socket.sendto(response.encode('utf-8'), addr)
+                server_sock.sendto(response.encode('utf-8'), addr)
                 print(f"Sent response: {response}")
                 
                 # Start file transfer handling
@@ -85,7 +85,7 @@ def start_server():
             else:
                 # File doesn't exist, send error response
                 response = f"ERR {filename} NOT_FOUND"
-                server_socket.sendto(response.encode('utf-8'), addr)
+                server_sock.sendto(response.encode('utf-8'), addr)
                 print(f"Sent response: {response}")
 
 if __name__ == "__main__":

@@ -3,35 +3,37 @@ import os
 import base64
 import time
 
-def sendAndReceive(sock, message, server_address, initial_timeout=1.0, max_retries=5):
-    timeout = initial_timeout
-    retries = 0
-    
-    while retries < max_retries:
+
+def sendAndReceive(sock, message, server_address, timeout=2.0, max_retries=5):
+    for attempt in range(max_retries):
         try:
-            # Set socket timeout
+            # 1. 设置超时
             sock.settimeout(timeout)
-            
-            # Send message
+
+            # 2. 发送消息
+            print(f"--> Sending to {server_address}: '{message}' (Attempt {attempt + 1})")
             sock.sendto(message.encode('utf-8'), server_address)
-            print(f"Sent: {message} (Attempt {retries + 1})")
-            
-            # Wait for response
-            response, addr = sock.recvfrom(65535)  # Increased buffer size for base64 data
-            return response.decode('utf-8'), addr
-            
+
+            # 3. 等待响应
+            response_bytes, addr = sock.recvfrom(2048)  # 缓冲区建议比1336稍大
+            response_str = response_bytes.decode('utf-8')
+            print(f"<-- Received from {addr}: '{response_str}'")
+
+            # 4. 成功接收，返回结果
+            return response_str, addr
+
         except socket.timeout:
-            retries += 1
-            if retries < max_retries:
-                # Double the timeout for next attempt
-                timeout *= 2
-                print(f"Timeout occurred. Retrying with {timeout:.1f}s timeout...")
-            else:
-                raise socket.timeout(f"Failed after {max_retries} attempts. Server not responding.")
+            print(f"*** Timeout after {timeout:.1f}s. Retrying... ***")
+            # 增加下一次的超时时间
+            timeout *= 2
+            continue  # 继续下一次尝试
+
+    # 所有尝试都失败后
+    raise Exception(f"Server not responding after {max_retries} attempts.")
 
 def download_file(filename, server_host, data_port, file_size):
     # Create a new socket for data transfer
-    data_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    data_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     server_address = (server_host, data_port)
     
     # Create clientfile directory if it doesn't exist
@@ -51,7 +53,7 @@ def download_file(filename, server_host, data_port, file_size):
                 # Request chunk
                 request = f"FILE {filename} GET START {start} END {end}"
                 try:
-                    response = sendAndReceive(data_socket, request, server_address)
+                    response = sendAndReceive(data_sock, request, server_address)
                     
                     # Parse response
                     parts = response[0].split()
@@ -75,7 +77,7 @@ def download_file(filename, server_host, data_port, file_size):
         # Send close request with retransmission
         try:
             close_request = f"FILE {filename} CLOSE"
-            response = sendAndReceive(data_socket, close_request, server_address)
+            response = sendAndReceive(data_sock, close_request, server_address)
             if response[0] == f"FILE {filename} CLOSE_OK":
                 print("File transfer completed successfully")
             else:
@@ -86,7 +88,7 @@ def download_file(filename, server_host, data_port, file_size):
     except Exception as e:
         print(f"Error during file transfer: {str(e)}")
     finally:
-        data_socket.close()
+        data_sock.close()
 
 def main():
     # Create a UDP socket
