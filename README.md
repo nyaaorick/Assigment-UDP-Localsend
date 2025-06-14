@@ -5,7 +5,7 @@
 
 ## Description
 
-All file operations are contained within specific directories: `server_files` on the server and `client_files` on the client.
+All file operations are contained within specific directories: `serverfile` on the server and `client_files` on the client.
 
 
 
