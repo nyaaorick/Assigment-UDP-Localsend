@@ -143,17 +143,16 @@ def main():
                 print(f"Error getting file list: {str(e)}")
                 continue
 
-            # 从用户处获取命令
             filename = input("""
-            *!command menu ! *
-            **********************************************************
-            * cd <folder>         - 进入指定目录 (例如: cd folder1)
-            * cd ..               - 返回上一级目录
-            * <filename>          - enter filename directly to download file !
-            * all                 - download all files
-            * upload <filename>   - upload file to server
-            * kill                - why r u doing this ???
-            * press enter         - exist client
+            *！COMMAND MENU ! * What Can I Do For You?
+            ********************************************
+            * <filename>          - Download a file by entering its name
+            * cd <folder>         - Change to the specified directory (e.g., cd my_files)
+            * cd ..               - Go back to the parent directory
+            * all                 - Download all files in the current directory
+            * upload <filename>   - Upload a file to the server
+            * kill                - Terminate the client session
+            * (press enter)       - Exit the client
 
             Enter command: """)
             
