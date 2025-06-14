@@ -76,6 +76,37 @@ def start_server():
             print(f"[Main Port] Sent file list: {files}")
             continue
 
+        elif message == "KILL_SERVER_FILES":
+            try:
+                # 获取所有文件列表
+                files = os.listdir("serverfile")
+                if not files:
+                    response = "KILL_OK Files deleted successfully. (No files to delete)"
+                    server_sock.sendto(response.encode('utf-8'), client_addr)
+                    print("[Main Port] No files to delete.")
+                    continue
+
+                # 删除所有文件
+                for filename in files:
+                    file_path = os.path.join("serverfile", filename)
+                    try:
+                        os.remove(file_path)
+                        print(f"[Main Port] Deleted file: {filename}")
+                    except Exception as e:
+                        print(f"[Main Port] Error deleting {filename}: {e}")
+                        response = "KILL_ERR Deletion failed."
+                        server_sock.sendto(response.encode('utf-8'), client_addr)
+                        continue
+
+                response = "KILL_OK Files deleted successfully."
+                server_sock.sendto(response.encode('utf-8'), client_addr)
+                print("[Main Port] All files deleted successfully.")
+            except Exception as e:
+                print(f"[Main Port] Error during file deletion: {e}")
+                response = "KILL_ERR Deletion failed."
+                server_sock.sendto(response.encode('utf-8'), client_addr)
+            continue
+
         parts = message.split()
         if len(parts) >= 2 and parts[0] == "DOWNLOAD":
             filename = parts[1]

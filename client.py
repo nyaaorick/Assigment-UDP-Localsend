@@ -133,18 +133,76 @@ def main():
                         print(f"{i}. {filename}")
                 else:
                     print("Error: Could not get file list from server")
+                    continue
             except Exception as e:
                 print(f"Error getting file list: {str(e)}")
+                continue
 
             # 从用户处获取要下载的文件名
-            filename = input("\nEnter the filename to download (or press Enter to quit): ")
+            filename = input("\nEnter the filename to download (or 'all' to download all files, 'kill' to delete all files, or press Enter to quit): ")
             
             # 如果用户直接按回车，就退出循环
             if not filename:
                 client_sock.close()  # 退出前关闭本次循环创建的套接字
                 break
 
-            # 发送 DOWNLOAD 请求
+            # 处理 'kill' 命令
+            if filename.lower() == 'kill':
+                try:
+                    response_str, _ = sendAndReceive(client_sock, "KILL_SERVER_FILES", server_address)
+                    if response_str.startswith("KILL_OK"):
+                        print("\n[SUCCESS] All files on server have been deleted successfully.")
+                    elif response_str.startswith("KILL_ERR"):
+                        print("\n[ERROR] Failed to delete files on server.")
+                    else:
+                        print(f"\n[WARNING] Unexpected response from server: {response_str}")
+                except Exception as e:
+                    print(f"\n[ERROR] Failed to send kill command: {str(e)}")
+                continue
+
+            # 处理 'all' 命令
+            if filename.lower() == 'all':
+                if not files:  # 如果文件列表为空
+                    print("No files available to download.")
+                    continue
+                
+                print(f"\nStarting batch download of {len(files)} files...")
+                for file_to_download in files:
+                    print(f"\n{'='*50}")
+                    print(f"Downloading: {file_to_download}")
+                    print(f"{'='*50}")
+                    
+                    # 发送 DOWNLOAD 请求
+                    message = f"DOWNLOAD {file_to_download}"
+                    try:
+                        response_str, _ = sendAndReceive(client_sock, message, server_address)
+                        print(f"Received: {response_str}")
+
+                        # 解析服务器响应
+                        if response_str.startswith("OK"):
+                            parts = response_str.split()
+                            returned_filename = parts[1]
+                            size = int(parts[3])
+                            port = int(parts[5])
+
+                            print(f"File found: {returned_filename}")
+                            print(f"Size: {size} bytes")
+                            print(f"Port: {port}")
+
+                            server_info = (size, port)
+                            download_file(returned_filename, server_host, server_info)
+
+                        elif response_str.startswith("ERR"):
+                            print(f"Error: File '{file_to_download}' not found on server")
+
+                    except Exception as e:
+                        print(f"Error during download of '{file_to_download}': {str(e)}")
+                        continue
+                
+                print("\nBatch download completed.")
+                continue
+
+            # 处理单个文件下载
             message = f"DOWNLOAD {filename}"
             try:
                 response_str, _ = sendAndReceive(client_sock, message, server_address)
