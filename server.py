@@ -3,6 +3,30 @@ import os
 import base64
 import threading
 import shutil  # Added for recursive directory deletion
+import sys  # Added for command line argument handling
+
+def get_port_from_args(default_port):
+    """
+    Get port number from command line arguments.
+    - If no arguments provided, returns default port
+    - If one valid argument provided, returns that port
+    - If invalid or too many arguments, prints error and exits
+    """
+    if len(sys.argv) == 1:
+        print(f"[INFO] No port provided. Using default port: {default_port}")
+        return default_port
+    elif len(sys.argv) == 2:
+        try:
+            port = int(sys.argv[1])
+            print(f"[INFO] Port specified by user: {port}")
+            return port
+        except ValueError:
+            print(f"[ERROR] Invalid port '{sys.argv[1]}'. Port must be a number.")
+            sys.exit(1)
+    else:
+        print("[ERROR] Too many arguments.")
+        print("Usage: python3 server.py [port]")
+        sys.exit(1)
 
 ### MODIFICATION START: 1. 定义服务器的根目录 ###
 # 将根目录定义为一个全局常量，方便引用
@@ -86,15 +110,16 @@ def receive_file_data(sock, original_client_addr, target_file_path):
     except Exception as e:
         print(f"!!! [Util] Error during file data reception: {e}")
 
-def start_server():
+def start_server(port=51234):
     """
-    启动主服务器，监听请求。
+    Start the main server, listening for requests.
+    Args:
+        port (int): The port number to listen on. Defaults to 51234.
     """
     os.makedirs(SERVER_BASE_DIR, exist_ok=True)
     print(f"[INFO] Server files directory is ready at: {SERVER_BASE_DIR}")
 
     host = ''
-    port = 51234
     base_data_port = 51235
     
     # 为两个独立的功能分别设置状态字典
@@ -203,4 +228,11 @@ def start_server():
 
 
 if __name__ == "__main__":
-    start_server()
+    # Define default port
+    DEFAULT_SERVER_PORT = 51234
+    
+    # Get port from command line arguments
+    port_to_use = get_port_from_args(DEFAULT_SERVER_PORT)
+    
+    # Start server with the specified port
+    start_server(port_to_use)
