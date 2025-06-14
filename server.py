@@ -5,7 +5,7 @@ import base64
 
 def handle_file_transfer(filename, data_port):
     """
-    处理单个文件的完整传输流程（在新端口上）。
+    处理单个文件的完整传输流程（在新端口上）-handle the complete transfer process of a single file (on a new port)
     """
     data_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     data_sock.bind(('', data_port))
@@ -13,7 +13,7 @@ def handle_file_transfer(filename, data_port):
 
     file_path = os.path.join("serverfile", filename)
 
-    # 2. 进入循环，等待来自客户端的 GET 或 CLOSE 请求
+    # 2. 进入循环，等待来自客户端的 GET 或 CLOSE 请求-enter the loop to wait for GET or CLOSE requests from the client
     while True:
         try:
             request_bytes, addr = data_sock.recvfrom(2048)
@@ -54,6 +54,7 @@ def start_server():
     """
     启动主服务器，监听 DOWNLOAD 请求。
     这是一个单线程服务器，一次只能处理一个客户端的完整流程。
+    i will change it to a multi-threaded server later , but not its only a single thread server :(
     """
     host = ''  # 监听所有接口
     port = 51234

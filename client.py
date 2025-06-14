@@ -6,15 +6,13 @@ import time
 
 def sendAndReceive(sock, message, server_address, timeout=1.0, max_retries=5):
     """
-    一个通用的函数，用于发送请求并等待响应，包含超时和重传机制。
-
-    :param sock: 用于通信的套接字对象。
-    :param message: 要发送的字符串消息。
-    :param server_address: 目标服务器的 (host, port) 元组。
-    :param timeout: 初始超时时间（秒）。
-    :param max_retries: 最大重传次数。
-    :return: 成功时返回 (响应字符串, 服务器地址) 元组。
-    :raises Exception: 所有重传尝试失败后抛出异常。
+    :param sock: 用于通信的套接字对象-sock is the socket object for communication
+    :param message: 要发送的字符串消息-message is the string message to send
+    :param server_address: 目标服务器的 (host, port) 元组- a tuple of (host, port) for the server
+    :param timeout: 初始超时时间（秒）- initial timeout in seconds
+    :param max_retries: 最大重传次数-maximum number of retries
+    :return: 成功时返回 (响应字符串, 服务器地址) 元组-returns a tuple of (response string, server address) on success
+    :raises Exception: 所有重传尝试失败后抛出异常-raises an exception if all retries fail
     """
     for attempt in range(max_retries):
         try:
@@ -26,7 +24,7 @@ def sendAndReceive(sock, message, server_address, timeout=1.0, max_retries=5):
             sock.sendto(message.encode('utf-8'), server_address)
 
             # 等待响应
-            response_bytes, addr = sock.recvfrom(2048)  # 使用稍大的缓冲区以容纳Base64数据
+            response_bytes, addr = sock.recvfrom(4096)  # use a larger buffer to accommodate Base64 data
             response_str = response_bytes.decode('utf-8')
 
             # 成功接收，返回结果
@@ -44,15 +42,14 @@ def sendAndReceive(sock, message, server_address, timeout=1.0, max_retries=5):
 
 def download_file(filename, server_host, server_info):
     """
-    负责完整地传输一个文件。
+    负责完整地传输一个文件
 
-    :param filename: 要下载的文件名。
-    :param server_host: 服务器的主机名或IP地址。
-    :param server_info: 一个包含文件大小和数据端口的元组 (file_size, data_port)。
+    :param filename: 要下载的文件名
+    :param server_host: 服务器的主机名或IP地址-server's hostname or IP address
+    :param server_info: 一个包含文件大小和数据端口的元组 (file_size, data_port)
     """
     file_size, data_port = server_info
     server_data_address = (server_host, data_port)
-
     # 为数据传输创建一个新的UDP套接字
     data_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
@@ -63,20 +60,19 @@ def download_file(filename, server_host, server_info):
     local_file_path = os.path.join("client_files", filename)
 
     bytes_received = 0
-    # 作业规范中建议的数据块大小为1000字节
-    chunk_size = 1000
+    chunk_size = 1024 #1kb=1024bytes
 
     try:
         with open(local_file_path, 'wb') as f:
-            # 循环发送FILE GET请求来获取所有数据块
+            # 循环发送FILE GET请求来获取所有数据块-loop to send FILE GET requests to get all data chunks
             while bytes_received < file_size:
                 start_byte = bytes_received
-                # 修正：结束字节的计算应为闭区间
+                # 修正：结束字节的计算应为闭区间- a correction: the end byte calculation should be a closed interval
                 end_byte = min(start_byte + chunk_size - 1, file_size - 1)
 
                 request = f"FILE {filename} GET START {start_byte} END {end_byte}"
 
-                # 使用可靠的函数发送请求并接收数据
+                # 使用可靠的函数发送请求并接收数据-i fix the bug of too much parameters, now i only send 3 parameters
                 response_str, _ = sendAndReceive(data_sock, request, server_data_address)
 
                 # 解析服务器响应
@@ -96,12 +92,12 @@ def download_file(filename, server_host, server_info):
                     print(f"!!! Error: Unexpected data response: {response_str}")
                     break
 
-        # 结束流程：客户端下载完成后，发送 `FILE <filename> CLOSE` 消息
+        # 结束流程：客户端下载完成后，发送 `FILE <filename> CLOSE` 消息-end the process: after the client downloads the file, send the `FILE <filename> CLOSE` message
         print(f"[+] File download finished. Sending CLOSE request.")
         close_request = f"FILE {filename} CLOSE"
         response_str, _ = sendAndReceive(data_sock, close_request, server_data_address)
 
-        # 确认服务器的最终响应
+        # 确认服务器的最终响应-confirm the final response from the server
         if f"FILE {filename} CLOSE_OK" in response_str:
             print(f"[SUCCESS] Transfer for '{filename}' completed successfully.")
         else:
@@ -110,17 +106,17 @@ def download_file(filename, server_host, server_info):
     except Exception as e:
         print(f"!!! A critical error occurred during file transfer for '{filename}': {e}")
     finally:
-        # 确保数据套接字总是被关闭
+        # 确保数据套接字总是被关闭-guarantee that the data socket is always closed
         data_sock.close()
         print(f"[-] Data socket for '{filename}' closed.")
 
 
-# 精简重构后的 main 函数
+# 精简重构后的 main 函数-simplified and refactored main function
 def main():
-    # 创建一个UDP套接字
+    # 创建一个UDP套接字-create a UDP socket
     client_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-    # 直接使用 localhost 和固定端口
+    # 直接使用 localhost 和固定端口-i use localhost and a fixed port, i will change it later to fit threading
     server_host = 'localhost'
     server_port = 51234
     server_address = (server_host, server_port)
