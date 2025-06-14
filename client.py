@@ -183,6 +183,102 @@ def handle_upload(sock, server_address, command_input):
         print(f"\n[错误] 上传失败: {str(e)}")
 
 
+def handle_super_upload(sock, server_address, local_folder_path):
+    """
+    处理 supload 命令，采用"结构先行"策略上传整个文件夹。
+    此版本已将文件内容传输逻辑直接集成在内部。
+    """
+    # 步骤 1: 验证路径
+    local_folder_path = local_folder_path.strip().strip('\'"')
+    if not os.path.isdir(local_folder_path):
+        print(f"\n[错误] '{local_folder_path}' 不是一个有效的文件夹路径。")
+        return
+
+    root_folder_name = os.path.basename(local_folder_path)
+    print(f"[任务开始] 准备上传文件夹 '{root_folder_name}'...")
+
+    # 步骤 2: 扫描本地结构
+    print(" -> 正在扫描本地文件夹结构...")
+    relative_dirs = []
+    relative_files = []
+    for root, dirs, files in os.walk(local_folder_path):
+        for d in dirs:
+            relative_dirs.append(os.path.relpath(os.path.join(root, d), local_folder_path).replace(os.path.sep, '/'))
+        for f in files:
+            relative_files.append(os.path.relpath(os.path.join(root, f), local_folder_path).replace(os.path.sep, '/'))
+    print(f" -> 扫描完成: {len(relative_dirs)} 个子目录, {len(relative_files)} 个文件。")
+
+    try:
+        # 步骤 3: 同步目录结构
+        print(" -> 正在向服务器同步目录结构...")
+        structure_payload = f"SUPLOAD_STRUCTURE {root_folder_name}\n" + "\n".join(relative_dirs)
+        response_str, _ = sendAndReceive(sock, structure_payload, server_address)
+        if response_str != "STRUCTURE_OK":
+            print(f"\n[错误] 服务器未能创建目录结构。响应: {response_str}")
+            return
+        print(" -> 服务器目录结构已就绪。")
+
+        # 步骤 4: 逐个上传文件
+        print(" -> 开始逐个上传文件...")
+        for i, rel_file in enumerate(relative_files):
+            print(f"   ({i+1}/{len(relative_files)}) 正在上传: {rel_file}")
+            local_full_path = os.path.join(local_folder_path, rel_file.replace('/', os.path.sep))
+            
+            # 发送 SUPLOAD_FILE 指令，告诉服务器准备接收哪个文件
+            response_str, _ = sendAndReceive(sock, f"SUPLOAD_FILE {rel_file}", server_address)
+            if response_str != "FILE_READY":
+                print(f"   [警告] 服务器未准备好接收文件 '{rel_file}'，已跳过。")
+                continue
+            
+            ### 文件内容传输逻辑（内联）开始 ###
+            try:
+                with open(local_full_path, 'rb') as f:
+                    file_size = os.path.getsize(local_full_path)
+                    if file_size == 0:
+                        print(f"\r     上传进度: 100.00% (0/0 bytes) - 空文件", end='')
+                    else:
+                        bytes_sent = 0
+                        chunk_size = 1024
+                        while True:
+                            chunk = f.read(chunk_size)
+                            if not chunk: break
+                            encoded_chunk = base64.b64encode(chunk).decode('utf-8')
+                            data_message = f"DATA {encoded_chunk}"
+                            # 发送数据块
+                            ack_response, _ = sendAndReceive(sock, data_message, server_address)
+                            if ack_response != "ACK_DATA":
+                                print(f"\n     [错误] 服务器未确认数据块: {ack_response}")
+                                # 跳出内部循环，放弃这个文件
+                                break
+                            bytes_sent += len(chunk)
+                            progress = (bytes_sent / file_size) * 100
+                            print(f"\r     上传进度: {progress:.2f}% ({bytes_sent}/{file_size} bytes)", end='')
+                
+                print() # 打印一个换行，保持格式整洁
+                
+                # 在 with 循环结束后，发送 UPLOAD_DONE
+                done_response, _ = sendAndReceive(sock, "UPLOAD_DONE", server_address)
+                if done_response != "UPLOAD_COMPLETE":
+                    print(f"   [警告] 文件传输完成时收到意外响应: {done_response}")
+
+            except Exception as e:
+                print(f"\n   [错误] 传输文件 '{os.path.basename(local_full_path)}' 内容时出错: {e}")
+                # 即使单个文件传输失败，也继续处理下一个文件
+                continue
+            ### 文件内容传输逻辑（内联）结束 ###
+
+        # 步骤 5: 任务结束
+        print(" -> 所有文件处理完毕，正在结束任务...")
+        response_str, _ = sendAndReceive(sock, "SUPLOAD_COMPLETE", server_address)
+        if response_str == "SUPLOAD_OK":
+            print(f"\n[任务成功] 文件夹 '{root_folder_name}' 已全部上传！")
+        else:
+            print(f"\n[警告] 任务结束时收到意外响应: {response_str}")
+
+    except Exception as e:
+        print(f"\n[严重错误] 上传过程中发生异常: {e}")
+
+
 def main():
     # 在循环外部创建唯一的套接字-create the unique socket outside the loop
     client_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -227,6 +323,7 @@ def main():
             * cd ..               - Go back to the parent directory
             * all                 - Download all files in the current directory
             * upload <filename>   - Upload a file to the server
+            * supload <folder>    - Upload an entire folder to the server
             * kill                - kill every files on server
             * (press enter)       - Exit the client
 
@@ -255,6 +352,14 @@ def main():
                 path_or_filename_input = filename.split(' ', 1)[1]
                 # 调用新的模块化函数处理上传
                 handle_upload(client_sock, server_address, path_or_filename_input)
+                continue # 处理完后继续下一次循环
+
+            # 处理 supload 命令
+            if filename.lower().startswith('supload '):
+                # 提取 'supload ' 后面的文件夹路径
+                folder_path = filename.split(' ', 1)[1]
+                # 调用新的核心处理函数
+                handle_super_upload(client_sock, server_address, folder_path)
                 continue # 处理完后继续下一次循环
 
             # 处理 'kill' 命令
