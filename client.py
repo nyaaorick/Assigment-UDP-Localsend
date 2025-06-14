@@ -144,7 +144,18 @@ def main():
                 continue
 
             # 从用户处获取命令
-            filename = input("\nEnter command (e.g. 'cd <dir>', 'all', 'kill', 'upload <file>', <filename> to download), or press Enter to quit: ")
+            filename = input("""
+            *!command menu ! *
+            **********************************************************
+            * cd <folder>         - 进入指定目录 (例如: cd folder1)
+            * cd ..               - 返回上一级目录
+            * <filename>          - enter filename directly to download file !
+            * all                 - download all files
+            * upload <filename>   - upload file to server
+            * kill                - why r u doing this ???
+            * press enter         - exist client
+
+            Enter command: """)
             
             # 如果用户直接按回车，就退出循环
             if not filename:
