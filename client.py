@@ -113,61 +113,68 @@ def download_file(filename, server_host, server_info):
 
 # 精简重构后的 main 函数-simplified and refactored main function
 def main():
-    # 创建一个UDP套接字-create a UDP socket
-    client_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    while True:
+        # 创建一个UDP套接字-create a UDP socket
+        client_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-    # 直接使用 localhost 和固定端口-i use localhost and a fixed port, i will change it later to fit threading
-    server_host = 'localhost'
-    server_port = 51234
-    server_address = (server_host, server_port)
+        # 直接使用 localhost 和固定端口-i use localhost and a fixed port, i will change it later to fit threading
+        server_host = 'localhost'
+        server_port = 51234
+        server_address = (server_host, server_port)
 
-    try:
-        # 获取服务器上的文件列表
         try:
-            response_str, _ = sendAndReceive(client_sock, "LIST_FILES", server_address)
-            if response_str.startswith("OK"):
-                files = response_str.split()[1:]  # 去掉"OK"前缀
-                print("\nAvailable files on server:")
-                for i, filename in enumerate(files, 1):
-                    print(f"{i}. {filename}")
-            else:
-                print("Error: Could not get file list from server")
+            # 获取服务器上的文件列表
+            try:
+                response_str, _ = sendAndReceive(client_sock, "LIST_FILES", server_address)
+                if response_str.startswith("OK"):
+                    files = response_str.split()[1:] 
+                    print("\nAvailable files on server:")
+                    for i, filename in enumerate(files, 1):
+                        print(f"{i}. {filename}")
+                else:
+                    print("Error: Could not get file list from server")
+            except Exception as e:
+                print(f"Error getting file list: {str(e)}")
+
+            # 从用户处获取要下载的文件名
+            filename = input("\nEnter the filename to download (or press Enter to quit): ")
+            
+            # 如果用户直接按回车，就退出循环
+            if not filename:
+                client_sock.close()  # 退出前关闭本次循环创建的套接字
+                break
+
+            # 发送 DOWNLOAD 请求
+            message = f"DOWNLOAD {filename}"
+            try:
+                response_str, _ = sendAndReceive(client_sock, message, server_address)
+                print(f"Received: {response_str}")
+
+                # 解析服务器响应
+                if response_str.startswith("OK"):
+                    parts = response_str.split()
+                    returned_filename = parts[1]
+                    size = int(parts[3])
+                    port = int(parts[5])
+
+                    print(f"File found: {returned_filename}")
+                    print(f"Size: {size} bytes")
+                    print(f"Port: {port}")
+
+                    server_info = (size, port)
+                    download_file(returned_filename, server_host, server_info)
+
+                elif response_str.startswith("ERR"):
+                    print("Error: File not found on server")
+
+            except Exception as e:
+                print(f"Error during initial request: {str(e)}")
+
         except Exception as e:
-            print(f"Error getting file list: {str(e)}")
-
-        # 从用户处获取要下载的文件名
-        filename = input("\nEnter the filename to download: ")
-
-        # 发送 DOWNLOAD 请求
-        message = f"DOWNLOAD {filename}"
-        try:
-            response_str, _ = sendAndReceive(client_sock, message, server_address)
-            print(f"Received: {response_str}")
-
-            # 解析服务器响应
-            if response_str.startswith("OK"):
-                parts = response_str.split()
-                returned_filename = parts[1]
-                size = int(parts[3])
-                port = int(parts[5])
-
-                print(f"File found: {returned_filename}")
-                print(f"Size: {size} bytes")
-                print(f"Port: {port}")
-
-                server_info = (size, port)
-                download_file(returned_filename, server_host, server_info)
-
-            elif response_str.startswith("ERR"):
-                print("Error: File not found on server")
-
-        except Exception as e:
-            print(f"Error during initial request: {str(e)}")
-
-    except Exception as e:
-        print(f"Error: {str(e)}")
-    finally:
-        client_sock.close()
+            print(f"Error: {str(e)}")
+        finally:
+            client_sock.close()
+            print("\n" + "="*50 + "\n")  # 添加分隔线使输出更清晰
 
 
 if __name__ == "__main__":
