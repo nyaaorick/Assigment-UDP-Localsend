@@ -4,9 +4,38 @@ import base64
 import time
 import sys
 from pathlib import Path
+import hashlib # <-- 新增
+import json    # <-- 新增
 
 # Create client_files directory at program start
 Path("client_files").mkdir(exist_ok=True)
+
+# ... import 语句之后 ...
+
+# =================================================================
+# --- 新增功能 #1: MD5 清单生成函数 ---
+# =================================================================
+def calculate_md5(file_path: Path) -> str:
+    """计算文件的 MD5 哈希值"""
+    hash_md5 = hashlib.md5()
+    with file_path.open("rb") as f:
+        for chunk in iter(lambda: f.read(4096), b""):
+            hash_md5.update(chunk)
+    return hash_md5.hexdigest()
+
+def generate_md5_manifest(directory: str) -> dict:
+    """生成包含 {路径: MD5值} 的字典清单"""
+    manifest = {}
+    base_dir = Path(directory)
+    try:
+        for item in base_dir.rglob('*'):
+            if item.is_file():
+                relative_path = str(item.relative_to(base_dir)).replace(os.path.sep, '/')
+                manifest[relative_path] = calculate_md5(item)
+                print(f"Debug: Added to client manifest - {relative_path}: {manifest[relative_path]}")
+    except Exception as e:
+        print(f"Error generating client manifest: {e}")
+    return manifest
 
 def sendAndReceive(sock, message, server_address, timeout=1.0, max_retries=5):
     """
@@ -117,29 +146,60 @@ def transfer_file(sock, server_address, file_path, is_upload=True):
         return False
 
 def handle_upload(sock, server_address, command_input):
-    """Handle file upload with simplified logic."""
-    file_path = Path(command_input.strip().strip('\'"'))
-    if not file_path.is_file():
-        file_path = Path("client_files") / file_path
-        if not file_path.is_file():
-            print(f"\n[ERROR] File not found: '{file_path}'")
-            return
+    """
+    处理文件上传。此版本智能处理路径，能够：
+    1. 接受 'data.txt' 这样的简单文件名（在 client_files 中查找）。
+    2. 接受 'images/photo.png' 这样的相对路径（由 sync 功能使用）。
+    3. 接受 '/Users/me/Desktop/report.pdf' 这样的完整外部路径。
+    """
+    input_path_str = command_input.strip().strip('\'"')
+
+    # --- 新增的智能路径解析逻辑 ---
+    
+    local_path_to_read = None
+    path_for_server = None
+
+    # 优先级 1: 尝试将输入作为相对于 'client_files' 的路径。
+    # 这同时满足了【用例1】和【用例2】。
+    path_in_client_files = Path("client_files") / input_path_str
+    if path_in_client_files.is_file():
+        local_path_to_read = path_in_client_files
+        # 发送给服务器的路径就是这个相对路径
+        path_for_server = input_path_str
+    
+    # 优先级 2: 如果在 client_files 中找不到，则尝试将其作为直接路径（可能是绝对路径）。
+    # 这满足了【用例3】。
+    elif Path(input_path_str).is_file():
+        local_path_to_read = Path(input_path_str)
+        # 对于外部文件，我们只把文件名本身传到服务器的当前目录
+        path_for_server = local_path_to_read.name
+    
+    else:
+        print(f"\n[ERROR] File not found. Neither '{path_in_client_files}' nor '{input_path_str}' is a valid file.")
+        return
+        
+    # --- 路径解析逻辑结束 ---
 
     try:
-        upload_filename = file_path.name
-        response_str, _ = sendAndReceive(sock, f"UPLOAD {upload_filename}", server_address)
+        # 将路径中的 \ 替换为 / 以兼容协议
+        path_for_server_norm = str(path_for_server).replace(os.path.sep, '/')
+        
+        # 发送包含正确路径的 UPLOAD 命令
+        response_str, _ = sendAndReceive(sock, f"UPLOAD {path_for_server_norm}", server_address)
+        
         if response_str != "UPLOAD_READY":
             print(f"\n[ERROR] Server not ready for upload: {response_str}")
             return
 
-        if transfer_file(sock, server_address, file_path, is_upload=True):
+        # 使用解析出的完整本地路径来读取和传输文件
+        if transfer_file(sock, server_address, local_path_to_read, is_upload=True):
             response_str, _ = sendAndReceive(sock, "UPLOAD_DONE", server_address)
             if response_str == "UPLOAD_COMPLETE":
-                print(f"\n[SUCCESS] File '{upload_filename}' uploaded successfully!")
+                print(f"\n[SUCCESS] File '{path_for_server_norm}' uploaded successfully!")
             else:
                 print(f"\n[WARNING] Unexpected final response: {response_str}")
         else:
-            print(f"\n[ERROR] Upload failed for '{upload_filename}'")
+            print(f"\n[ERROR] Upload failed for '{path_for_server_norm}'")
 
     except Exception as e:
         print(f"\n[ERROR] Upload failed: {str(e)}")
@@ -194,6 +254,108 @@ def handle_super_upload(sock, server_address, local_folder_path):
 
     except Exception as e:
         print(f"\n[ERROR] Upload failed: {str(e)}")
+
+# =================================================================
+# --- 新增功能 #2: 主同步循环函数 ---
+# =================================================================
+def start_sync_mode(sock, server_address):
+    """
+    启动阻塞式的同步循环，使用分块协议上传MD5清单。
+    """
+    print("\n[SYNC MODE ACTIVATED]")
+    print("Client will now sync with the server every 30 seconds.")
+    print("Press Ctrl+C to stop syncing and return to the command menu.")
+    
+    while True:
+        try:
+            print("\n------------------ New Sync Cycle Started ------------------")
+            
+            # 1. 生成本地MD5清单
+            print(" -> Step 1/5: Generating local MD5 manifest...")
+            manifest = generate_md5_manifest("client_files")
+            manifest_payload = json.dumps(manifest)
+            
+            # 2. 将清单分块
+            chunk_size = 1024
+            chunks = [manifest_payload[i:i+chunk_size] for i in range(0, len(manifest_payload), chunk_size)]
+            num_chunks = len(chunks)
+
+            # 3. 与服务器开始分块传输会话
+            print(f" -> Step 2/5: Starting sync session for {num_chunks} manifest chunk(s)...")
+            response, _ = sendAndReceive(sock, f"SYNC_START {num_chunks}", server_address)
+            if response != "SYNC_READY":
+                raise Exception(f"Server not ready for sync. Response: {response}")
+
+            # 4. 逐块上传清单
+            print(" -> Step 3/5: Uploading manifest chunks...")
+            for i, chunk in enumerate(chunks):
+                ack_response, _ = sendAndReceive(sock, f"SYNC_CHUNK {i}/{num_chunks}\n{chunk}", server_address)
+                if ack_response != f"ACK_CHUNK {i}":
+                    raise Exception(f"Manifest chunk {i} upload failed. ACK not received.")
+
+            # 5. 结束清单传输，并获取服务器的"购物清单"
+            print(" -> Step 4/5: Finalizing manifest upload...")
+            shopping_list_response, _ = sendAndReceive(sock, "SYNC_FINISH", server_address)
+            
+            # 添加调试信息
+            print(f"Debug: Received response from server: {shopping_list_response}")
+
+            # 6. 根据"购物清单"上传文件
+            print(" -> Step 5/5: Processing server's file request list...")
+            if shopping_list_response.startswith("NEEDS_FILES"):
+                try:
+                    # 确保正确分割响应
+                    parts = shopping_list_response.split('\n', 1)
+                    if len(parts) != 2:
+                        raise ValueError(f"Invalid response format. Expected 'NEEDS_FILES\\nJSON', got: {shopping_list_response}")
+                    
+                    json_str = parts[1].strip()
+                    print(f"Debug: Attempting to parse JSON: {json_str}")
+                    
+                    response_data = json.loads(json_str)
+                    if not isinstance(response_data, dict) or 'files' not in response_data:
+                        raise ValueError(f"Invalid JSON format. Expected dict with 'files' key, got: {response_data}")
+                    
+                    files_to_upload = response_data['files']
+                    if not isinstance(files_to_upload, list):
+                        raise ValueError(f"Expected list of files, got: {type(files_to_upload)}")
+                    
+                    if files_to_upload:
+                        print(f" -> Server needs {len(files_to_upload)} file(s). Starting upload...")
+                        for file_path in files_to_upload:
+                            print(f"    - Uploading '{file_path}'...")
+                            handle_upload(sock, server_address, file_path)
+                    else:
+                        print(" -> All files are in sync.")
+                except json.JSONDecodeError as e:
+                    print(f"Error parsing server response: {e}")
+                    print(f"Raw response: {shopping_list_response}")
+                    raise
+                except ValueError as e:
+                    print(f"Error processing server response: {e}")
+                    raise
+            else:
+                print(" -> All files are in sync.")
+
+            print("\n[+] Sync cycle completed successfully.")
+            print("------------------------------------------------------------")
+            
+            # 7. 倒计时等待下一个周期
+            try:
+                for i in range(30, 0, -1):
+                    print(f'\rNext sync in {i} seconds...  ', end='')
+                    time.sleep(1)
+                print('\r                           \r', end='') 
+            except KeyboardInterrupt:
+                raise KeyboardInterrupt
+
+        except KeyboardInterrupt:
+            print("\n[SYNC MODE DEACTIVATED] Returning to command menu.")
+            break
+        except Exception as e:
+            print(f"\n[ERROR] An error occurred during sync cycle: {e}")
+            print("Waiting 30 seconds before retrying...")
+            time.sleep(30)
 
 def download_file(filename, server_host, server_info):
     """Handle file download with simplified logic."""
@@ -289,6 +451,7 @@ def display_command_menu():
     * all                 - Download all files in the current directory
     * upload <filename>   - Upload a file to the server
     * supload <folder>    - Upload an entire folder to the server
+    * sync                - Enter continuous sync mode (client -> server)
     * kill                - kill every files on server
     * (press enter)       - Exit the client
 
@@ -314,6 +477,8 @@ def handle_command(sock, server_address, command, files, server_host):
         handle_upload(sock, server_address, command.split(' ', 1)[1])
     elif command.lower().startswith('supload '):
         handle_super_upload(sock, server_address, command.split(' ', 1)[1])
+    elif command.lower() == 'sync':
+        start_sync_mode(sock, server_address)
     elif command.lower() == 'kill':
         handle_kill_command(sock, server_address)
     elif command.lower() == 'all':

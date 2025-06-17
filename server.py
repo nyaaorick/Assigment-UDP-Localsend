@@ -5,10 +5,57 @@ import threading
 import shutil  # Added for recursive directory deletion
 import sys  # Added for command line argument handling
 import logging
+import hashlib  # Added for MD5 calculation
+import json    # Added for manifest handling
 from dataclasses import dataclass
-from typing import Optional, Set
+from typing import Optional, Set, Dict
 import time
 from pathlib import Path
+
+def calculate_md5(file_path: Path) -> Optional[str]:
+    """A standalone helper function to calculate MD5 hash of a single file"""
+    hash_md5 = hashlib.md5()
+    try:
+        with file_path.open("rb") as f:
+            for chunk in iter(lambda: f.read(4096), b""):
+                hash_md5.update(chunk)
+        result = hash_md5.hexdigest()
+        print(f"Debug: Calculated MD5 for {file_path}: {result}")
+        return result
+    except IOError as e:
+        print(f"Error calculating MD5 for {file_path}: {e}")
+        return None
+    except Exception as e:
+        print(f"Unexpected error calculating MD5 for {file_path}: {e}")
+        return None
+
+def generate_md5_manifest(directory: Path) -> Dict[str, str]:
+    """Generate MD5 manifest for all files in directory"""
+    manifest = {}
+    try:
+        # 使用 rglob 递归扫描所有文件
+        for item in directory.rglob('*'):
+            try:
+                # 获取相对于基础目录的路径
+                rel_path = item.relative_to(directory)
+                # 转换为字符串并统一使用正斜杠
+                rel_path_str = str(rel_path).replace('\\', '/')
+                
+                if item.is_dir():
+                    manifest[rel_path_str] = "__DIR__"
+                    print(f"Debug: Added directory to manifest: {rel_path_str}")
+                elif item.is_file():
+                    md5 = calculate_md5(item)
+                    manifest[rel_path_str] = md5
+                    print(f"Debug: Added file to manifest: {rel_path_str} (MD5: {md5})")
+            except Exception as e:
+                print(f"Debug: Error processing {item}: {e}")
+                continue
+    except Exception as e:
+        print(f"Debug: Error scanning directory {directory}: {e}")
+    
+    print(f"Debug: Generated manifest with {len(manifest)} items")
+    return manifest
 
 @dataclass
 class ServerConfig:
@@ -322,6 +369,12 @@ class FileServer:
             self._handle_upload_command(command_line, client_addr, current_client_path)
         elif command_line.startswith("DOWNLOAD "):
             self._handle_download_command(command_line, client_addr, current_client_path)
+        elif command_line.startswith("SYNC_START "):
+            self._handle_sync_start(command_line, client_addr)
+        elif command_line.startswith("SYNC_CHUNK "):
+            self._handle_sync_chunk(command_line, payload, client_addr)
+        elif command_line == "SYNC_FINISH":
+            self._handle_sync_finish(client_addr)
         elif command_line.startswith("SUPLOAD_STRUCTURE "):
             self._handle_supload_structure(command_line, payload, client_addr, current_client_path)
         elif command_line.startswith("SUPLOAD_FILE "):
@@ -378,6 +431,130 @@ class FileServer:
             ).start()
         else:
             self.server_sock.sendto(f"ERR {filename} NOT_FOUND".encode('utf-8'), client_addr)
+
+    def _handle_sync_start(self, command_line: str, client_addr: tuple) -> None:
+        """Step 1: Client requests to start a new sync session"""
+        try:
+            total_chunks = int(command_line.split()[1])
+            session_key = f"sync-{client_addr}"
+            # Reuse the FolderHandler's sessions dictionary to manage the session
+            self.folder_handler.sessions[session_key] = {'chunks': [], 'total': total_chunks}
+            print(f"\n[Sync] ====== New Sync Session Started ======")
+            print(f"  [Sync] Client: {client_addr}")
+            print(f"  [Sync] Total chunks expected: {total_chunks}")
+            print(f"  [Sync] Session key: {session_key}")
+            self.server_sock.sendto(b"SYNC_READY", client_addr)
+        except (ValueError, IndexError):
+            print(f"  [Sync] Error: Invalid start command from {client_addr}: {command_line}")
+            self.server_sock.sendto(b"ERR_INVALID_START_COMMAND", client_addr)
+
+    def _handle_sync_chunk(self, command_line: str, payload: str, client_addr: tuple) -> None:
+        """Step 2: Client sends a manifest data chunk"""
+        session_key = f"sync-{client_addr}"
+        session = self.folder_handler.sessions.get(session_key)
+
+        if not session:
+            print(f"  [Sync] Error: No active session found for {client_addr}")
+            self.server_sock.sendto(b"ERR_NO_SYNC_SESSION", client_addr)
+        else:
+            try:
+                chunk_num_str = command_line.split()[1].split('/')[0]
+                chunk_num = int(chunk_num_str)
+                session['chunks'].append(payload)
+                print(f"  [Sync] Received chunk {chunk_num}/{session['total']} from {client_addr}")
+                print(f"  [Sync] Chunk size: {len(payload)} bytes")
+                self.server_sock.sendto(f"ACK_CHUNK {chunk_num}".encode('utf-8'), client_addr)
+            except (ValueError, IndexError):
+                print(f"  [Sync] Error: Invalid chunk command from {client_addr}: {command_line}")
+                self.server_sock.sendto(b"ERR_INVALID_CHUNK_COMMAND", client_addr)
+
+    def _handle_sync_finish(self, client_addr: tuple) -> None:
+        """Step 3: Client notifies that manifest is complete, server starts processing"""
+        session_key = f"sync-{client_addr}"
+        session = self.folder_handler.sessions.get(session_key)
+
+        if not session:
+            self.server_sock.sendto(b"ERR_NO_SYNC_SESSION", client_addr)
+            return
+
+        full_manifest_str = "".join(session['chunks'])
+        
+        try:
+            client_manifest = json.loads(full_manifest_str)
+            print(f"\nDebug: Client manifest size: {len(client_manifest)} items")
+        except json.JSONDecodeError:
+            print(f"Error: Failed to parse client manifest JSON")
+            del self.folder_handler.sessions[session_key]
+            return
+
+        # Note: Sync is based on the server's root directory
+        server_manifest = generate_md5_manifest(self.config.base_dir)
+        print(f"Debug: Server manifest size: {len(server_manifest)} items")
+        
+        client_items = set(client_manifest.keys())
+        server_items = set(server_manifest.keys())
+        
+        # 获取需要删除的项目
+        items_to_delete = server_items - client_items
+        files_to_request = []
+        
+        print(f"\n[Sync] ====== File Changes ======")
+        print(f"  [Sync] Items to delete: {len(items_to_delete)}")
+        
+        # 打印所有文件路径和MD5值进行比较
+        print("\nDebug: File comparison:")
+        for path in sorted(set(client_items) | server_items):
+            client_md5 = client_manifest.get(path)
+            server_md5 = server_manifest.get(path)
+            print(f"Path: {path}")
+            print(f"  Client MD5: {client_md5}")
+            print(f"  Server MD5: {server_md5}")
+            
+            if path not in server_manifest:
+                print(f"  [Sync] New file: {path}")
+                files_to_request.append(path)
+            elif client_md5 != "__DIR__" and server_md5 != "__DIR__" and client_md5 != server_md5:
+                print(f"  [Sync] Modified file: {path}")
+                files_to_request.append(path)
+        
+        # Execute deletions
+        if items_to_delete:
+            # 首先删除文件，然后删除目录
+            # 按路径长度排序，确保先删除深层项目
+            sorted_items = sorted(items_to_delete, key=lambda x: len(x.split('/')), reverse=True)
+            for path in sorted_items:
+                full_path = self.config.base_dir / path
+                try:
+                    if full_path.is_file():
+                        full_path.unlink()
+                        print(f"  [Sync] Deleted: {path}")
+                    elif full_path.is_dir():
+                        # 检查目录是否为空
+                        is_empty = not any(full_path.iterdir())
+                        if is_empty:
+                            full_path.rmdir()
+                            print(f"  [Sync] Deleted empty directory: {path}/")
+                        else:
+                            print(f"  [Sync] Keeping directory: {path}/ (contains files)")
+                except Exception as e:
+                    print(f"  [Sync] Failed to delete {path}: {e}")
+        
+        # 修改响应格式为JSON
+        if files_to_request:
+            response_data = {
+                "status": "NEEDS_FILES",
+                "files": files_to_request
+            }
+            response = f"NEEDS_FILES\n{json.dumps(response_data)}"
+            print(f"Debug: Requesting {len(files_to_request)} files")
+        else:
+            response = "SYNC_OK_NO_CHANGES"
+            print("Debug: No files need to be updated")
+        
+        self.server_sock.sendto(response.encode('utf-8'), client_addr)
+        
+        # Clean up session
+        del self.folder_handler.sessions[session_key]
 
     def _handle_supload_structure(self, command_line: str, payload: str, client_addr: tuple, current_client_path: Path) -> None:
         """Handle SUPLOAD_STRUCTURE command"""
