@@ -411,20 +411,36 @@ class SyncHandler:
                     "status": "NEEDS_FILES",
                     "files": files_to_request
                 }
-                response = f"NEEDS_FILES\n{json.dumps(response_data)}"
-                print(f"Debug: Requesting {len(files_to_request)} files")
+                payload_str = json.dumps(response_data)
+                # Store chunks in session for client to fetch
+                session['response_chunks'] = [payload_str[i:i+1024] for i in range(0, len(payload_str), 1024)]
+                num_chunks = len(session['response_chunks'])
+                return True, f"NEEDS_FILES_READY {num_chunks}"
             else:
-                response = "SYNC_OK_NO_CHANGES"
-                print("Debug: No files need to be updated")
-                
-            return True, response
+                session['response_chunks'] = []
+                return True, "SYNC_OK_NO_CHANGES"
             
         except Exception as e:
             print(f"Error processing manifest: {e}")
             return False, f"ERR_PROCESSING_MANIFEST: {str(e)}"
-        finally:
-            # Clean up session
-            del self.sessions[session_key]
+            
+    def get_response_chunk(self, client_addr: tuple, chunk_index: int) -> tuple[bool, str]:
+        """Get a specific response chunk for a client."""
+        session_key = f"sync-{client_addr}"
+        session = self.sessions.get(session_key)
+        
+        if not session or 'response_chunks' not in session:
+            return False, "ERR_NO_SYNC_SESSION_DATA"
+            
+        try:
+            chunk_data = session['response_chunks'][chunk_index]
+            # If this is the last chunk, clean up the session
+            if chunk_index == len(session['response_chunks']) - 1:
+                print(f"    [Sync] Client {client_addr} has fetched all response chunks. Cleaning up session.")
+                self.sessions.pop(session_key, None)
+            return True, chunk_data
+        except IndexError:
+            return False, "ERR_INVALID_CHUNK_INDEX"
             
     def _delete_files(self, items_to_delete: set) -> None:
         """Delete files and empty directories that are no longer needed."""
@@ -506,6 +522,8 @@ class FileServer:
             self._handle_sync_chunk(command_line, payload, client_addr)
         elif command_line == "SYNC_FINISH":
             self._handle_sync_finish(client_addr)
+        elif command_line.startswith("GET_SYNC_CHUNK "):
+            self._handle_get_sync_chunk(command_line, client_addr)
         elif command_line.startswith("SUPLOAD_STRUCTURE "):
             self._handle_supload_structure(command_line, payload, client_addr, current_client_path)
         elif command_line.startswith("SUPLOAD_FILE "):
@@ -593,6 +611,16 @@ class FileServer:
         """Handle SYNC_FINISH command."""
         success, response = self.sync_handler.process_manifest(client_addr)
         self.server_sock.sendto(response.encode('utf-8'), client_addr)
+
+    def _handle_get_sync_chunk(self, command_line: str, client_addr: tuple) -> None:
+        """Handle GET_SYNC_CHUNK command."""
+        try:
+            chunk_index = int(command_line.split(' ', 1)[1])
+            success, response = self.sync_handler.get_response_chunk(client_addr, chunk_index)
+            self.server_sock.sendto(response.encode('utf-8'), client_addr)
+        except (IndexError, ValueError) as e:
+            print(f"!!! [Sync] Invalid chunk request from {client_addr}: {command_line}. Error: {e}")
+            self.server_sock.sendto(b"ERR_INVALID_CHUNK_REQUEST", client_addr)
 
     def _handle_supload_structure(self, command_line: str, payload: str, client_addr: tuple, current_client_path: Path) -> None:
         """Handle SUPLOAD_STRUCTURE command"""

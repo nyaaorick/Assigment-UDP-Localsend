@@ -308,36 +308,55 @@ class SyncManager:
 
     def process_server_response(self, response: str) -> None:
         """Process server's response to manifest and handle file uploads."""
-        if not response.startswith("NEEDS_FILES"):
+        # Case 1: Files are already in sync
+        if response == "SYNC_OK_NO_CHANGES":
             print(" -> All files are in sync.")
             return
 
-        try:
-            parts = response.split('\n', 1)
-            if len(parts) != 2:
-                raise ValueError(f"Invalid response format: {response}")
-            
-            response_data = json.loads(parts[1].strip())
-            if not isinstance(response_data, dict) or 'files' not in response_data:
-                raise ValueError(f"Invalid JSON format: {response_data}")
-            
-            files_to_upload = response_data['files']
-            if not isinstance(files_to_upload, list):
-                raise ValueError(f"Expected list of files, got: {type(files_to_upload)}")
-            
-            if files_to_upload:
-                print(f" -> Server needs {len(files_to_upload)} file(s). Starting upload...")
-                for file_path in files_to_upload:
-                    print(f"    - Uploading '{file_path}'...")
-                    handle_upload(self.sock, self.server_address, file_path)
-            else:
-                print(" -> All files are in sync.")
+        # Case 2: Server has prepared data chunks, client needs to fetch them
+        if response.startswith("NEEDS_FILES_READY"):
+            try:
+                parts = response.split()
+                if len(parts) != 2:
+                    raise ValueError("Invalid READY response format")
                 
-        except json.JSONDecodeError as e:
-            print(f"Error parsing server response: {e}")
-            print(f"Raw response: {response}")
-        except ValueError as e:
-            print(f"Error processing server response: {e}")
+                num_chunks = int(parts[1])
+                print(f" -> Server has {num_chunks} data chunk(s). Fetching...")
+
+                chunks = []
+                for i in range(num_chunks):
+                    # Use existing sendAndReceive for reliable chunk fetching
+                    command = f"GET_SYNC_CHUNK {i}"
+                    chunk_data, _ = sendAndReceive(self.sock, command, self.server_address, timeout=5.0)
+                    chunks.append(chunk_data)
+                    print(f"\r -> Receiving file list... {i+1}/{num_chunks}", end="")
+                
+                print()  # New line after progress
+                json_payload = "".join(chunks)
+
+                # Parse JSON and handle file uploads
+                response_data = json.loads(json_payload)
+                if 'files' not in response_data:
+                    raise ValueError("Invalid JSON format: missing 'files' field")
+                
+                files_to_upload = response_data['files']
+                if not isinstance(files_to_upload, list):
+                    raise ValueError("Expected list of files")
+                
+                if files_to_upload:
+                    print(f" -> Server needs {len(files_to_upload)} file(s). Starting upload...")
+                    for file_path in files_to_upload:
+                        print(f"    - Uploading '{file_path}'...")
+                        handle_upload(self.sock, self.server_address, file_path)
+                else:
+                    print(" -> All files are in sync.")
+            
+            except Exception as e:
+                print(f"\n[ERROR] Failed to process server's sync response: {e}")
+                print(f"Raw response: {response}")
+
+        else:
+            print(f"\n[WARNING] Received unexpected response from server: {response}")
 
     def sync_cycle(self) -> bool:
         """Execute one complete sync cycle."""
