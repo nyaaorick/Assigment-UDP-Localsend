@@ -72,57 +72,61 @@ class FileTransferHandler:
     """Handles file transfer operations"""
     def __init__(self, config: ServerConfig):
         self.config = config
+        self.chunk_size = 1024 # 定义块大小，应与客户端匹配
 
     def handle_file_transfer(self, filename: str, data_port: int, client_path: Path) -> None:
-        """Handle complete file transfer process on a new port"""
+        """Handle complete file transfer process on a new port to match the new client logic."""
         data_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         data_sock.bind((self.config.host, data_port))
         print(f"[+] Data socket is now listening on port {data_port} for '{filename}'...")
 
         file_path = client_path / filename
-
-        while True:
-            try:
-                request_bytes, addr = data_sock.recvfrom(self.config.data_buffer_size)
-                request = request_bytes.decode('utf-8')
-                print(f"    [Data Port] Received from {addr}: '{request}'")
-
-                if f"FILE {filename} GET" in request:
-                    self._handle_file_get(request, file_path, data_sock, addr)
-                elif f"FILE {filename} CLOSE" in request:
-                    self._handle_file_close(filename, data_sock, addr)
-                    break
-
-            except Exception as e:
-                print(f"!!! An error occurred during file transfer: {e}")
-                break
-
-        data_sock.close()
-        print(f"[-] Data socket on port {data_port} has been closed.")
-
-    def _handle_file_get(self, request: str, file_path: Path, data_sock: socket.socket, addr: tuple) -> None:
-        """Handle FILE GET request"""
-        parts = request.split()
-        start_byte = int(parts[4])
-        end_byte = int(parts[6])
-
         if not file_path.is_file():
-            print(f"!!! File not found at path: {file_path}")
+            print(f"!!! [Data Port] File not found at path: {file_path}")
+            data_sock.close()
             return
+            
+        try:
+            # 1. 等待客户端的初始握手信号
+            request_bytes, client_addr = data_sock.recvfrom(self.config.data_buffer_size)
+            request = request_bytes.decode('utf-8')
+            print(f"    [Data Port] Received from {client_addr}: '{request}'")
 
-        with file_path.open('rb') as f:
-            f.seek(start_byte)
-            chunk_data = f.read(end_byte - start_byte + 1)
-            encoded_chunk = base64.b64encode(chunk_data).decode('utf-8')
+            if request == f"DOWNLOAD {filename}":
+                # 2. 回复DOWNLOAD_READY，告诉客户端可以开始请求数据了
+                data_sock.sendto(b"DOWNLOAD_READY", client_addr)
+                print(f"    [Data Port] Sent DOWNLOAD_READY to {client_addr}. Starting transfer...")
 
-        response = f"FILE {file_path.name} OK START {start_byte} END {end_byte} DATA {encoded_chunk}"
-        data_sock.sendto(response.encode('utf-8'), addr)
+                # 3. 打开文件，准备分块发送
+                with file_path.open('rb') as f:
+                    while True:
+                        # 4. 等待客户端的 "GET_CHUNK" 请求
+                        chunk_req_bytes, recv_addr = data_sock.recvfrom(self.config.data_buffer_size)
+                        if chunk_req_bytes.decode('utf-8') != "GET_CHUNK":
+                            # 如果收到意外的请求，则停止传输
+                            break
+                        
+                        chunk_data = f.read(self.chunk_size)
+                        if not chunk_data:
+                            # 5. 文件读取完毕，发送传输完成信号
+                            data_sock.sendto(b"TRANSFER_COMPLETE", client_addr)
+                            print(f"[+] File transfer for '{filename}' completed.")
+                            break
+                        
+                        # 6. 发送数据块
+                        encoded_chunk = base64.b64encode(chunk_data).decode('utf-8')
+                        response = f"DATA {encoded_chunk}"
+                        data_sock.sendto(response.encode('utf-8'), client_addr)
+            else:
+                print(f"!!! [Data Port] Expected 'DOWNLOAD {filename}' but received '{request}'. Aborting.")
 
-    def _handle_file_close(self, filename: str, data_sock: socket.socket, addr: tuple) -> None:
-        """Handle FILE CLOSE request"""
-        response = f"FILE {filename} CLOSE_OK"
-        data_sock.sendto(response.encode('utf-8'), addr)
-        print(f"[+] Sent CLOSE_OK. Transfer for '{filename}' is complete.")
+        except socket.timeout:
+            print(f"!!! [Data Port] Socket timed out during transfer for '{filename}'.")
+        except Exception as e:
+            print(f"!!! [Data Port] An error occurred during file transfer: {e}")
+        finally:
+            data_sock.close()
+            print(f"[-] Data socket on port {data_port} has been closed.")
 
     def receive_file_data(self, sock: socket.socket, original_client_addr: tuple, target_file_path: Path) -> None:
         """Receive complete file data on the main socket"""
