@@ -255,107 +255,142 @@ def handle_super_upload(sock, server_address, local_folder_path):
     except Exception as e:
         print(f"\n[ERROR] Upload failed: {str(e)}")
 
-# =================================================================
-# --- 新增功能 #2: 主同步循环函数 ---
-# =================================================================
-def start_sync_mode(sock, server_address):
-    """
-    启动阻塞式的同步循环，使用分块协议上传MD5清单。
-    """
-    print("\n[SYNC MODE ACTIVATED]")
-    print("Client will now sync with the server every 30 seconds.")
-    print("Press Ctrl+C to stop syncing and return to the command menu.")
+class SyncManager:
+    """Manages file synchronization between client and server."""
     
-    while True:
+    def __init__(self, sock, server_address):
+        self.sock = sock
+        self.server_address = server_address
+        self.chunk_size = 1024
+        self.sync_interval = 30  # seconds
+        
+    def generate_md5_manifest(self, directory: str) -> dict:
+        """Generate a manifest of {path: MD5} for all files in directory."""
+        manifest = {}
+        base_dir = Path(directory)
         try:
-            print("\n------------------ New Sync Cycle Started ------------------")
-            
-            # 1. 生成本地MD5清单
-            print(" -> Step 1/5: Generating local MD5 manifest...")
-            manifest = generate_md5_manifest("client_files")
+            for item in base_dir.rglob('*'):
+                if item.is_file():
+                    relative_path = str(item.relative_to(base_dir)).replace(os.path.sep, '/')
+                    manifest[relative_path] = calculate_md5(item)
+                    print(f"Debug: Added to client manifest - {relative_path}: {manifest[relative_path]}")
+        except Exception as e:
+            print(f"Error generating client manifest: {e}")
+        return manifest
+
+    def transfer_manifest(self, manifest: dict) -> bool:
+        """Transfer the manifest to server in chunks."""
+        try:
             manifest_payload = json.dumps(manifest)
-            
-            # 2. 将清单分块
-            chunk_size = 1024
-            chunks = [manifest_payload[i:i+chunk_size] for i in range(0, len(manifest_payload), chunk_size)]
+            chunks = [manifest_payload[i:i+self.chunk_size] 
+                     for i in range(0, len(manifest_payload), self.chunk_size)]
             num_chunks = len(chunks)
 
-            # 3. 与服务器开始分块传输会话
-            print(f" -> Step 2/5: Starting sync session for {num_chunks} manifest chunk(s)...")
-            response, _ = sendAndReceive(sock, f"SYNC_START {num_chunks}", server_address)
+            # Start sync session
+            response, _ = sendAndReceive(self.sock, f"SYNC_START {num_chunks}", self.server_address)
             if response != "SYNC_READY":
                 raise Exception(f"Server not ready for sync. Response: {response}")
 
-            # 4. 逐块上传清单
-            print(" -> Step 3/5: Uploading manifest chunks...")
+            # Transfer chunks
             for i, chunk in enumerate(chunks):
-                ack_response, _ = sendAndReceive(sock, f"SYNC_CHUNK {i}/{num_chunks}\n{chunk}", server_address)
+                ack_response, _ = sendAndReceive(
+                    self.sock, 
+                    f"SYNC_CHUNK {i}/{num_chunks}\n{chunk}", 
+                    self.server_address
+                )
                 if ack_response != f"ACK_CHUNK {i}":
                     raise Exception(f"Manifest chunk {i} upload failed. ACK not received.")
 
-            # 5. 结束清单传输，并获取服务器的"购物清单"
-            print(" -> Step 4/5: Finalizing manifest upload...")
-            shopping_list_response, _ = sendAndReceive(sock, "SYNC_FINISH", server_address)
-            
-            # 添加调试信息
-            print(f"Debug: Received response from server: {shopping_list_response}")
+            return True
+        except Exception as e:
+            print(f"Error transferring manifest: {e}")
+            return False
 
-            # 6. 根据"购物清单"上传文件
-            print(" -> Step 5/5: Processing server's file request list...")
-            if shopping_list_response.startswith("NEEDS_FILES"):
-                try:
-                    # 确保正确分割响应
-                    parts = shopping_list_response.split('\n', 1)
-                    if len(parts) != 2:
-                        raise ValueError(f"Invalid response format. Expected 'NEEDS_FILES\\nJSON', got: {shopping_list_response}")
-                    
-                    json_str = parts[1].strip()
-                    print(f"Debug: Attempting to parse JSON: {json_str}")
-                    
-                    response_data = json.loads(json_str)
-                    if not isinstance(response_data, dict) or 'files' not in response_data:
-                        raise ValueError(f"Invalid JSON format. Expected dict with 'files' key, got: {response_data}")
-                    
-                    files_to_upload = response_data['files']
-                    if not isinstance(files_to_upload, list):
-                        raise ValueError(f"Expected list of files, got: {type(files_to_upload)}")
-                    
-                    if files_to_upload:
-                        print(f" -> Server needs {len(files_to_upload)} file(s). Starting upload...")
-                        for file_path in files_to_upload:
-                            print(f"    - Uploading '{file_path}'...")
-                            handle_upload(sock, server_address, file_path)
-                    else:
-                        print(" -> All files are in sync.")
-                except json.JSONDecodeError as e:
-                    print(f"Error parsing server response: {e}")
-                    print(f"Raw response: {shopping_list_response}")
-                    raise
-                except ValueError as e:
-                    print(f"Error processing server response: {e}")
-                    raise
+    def process_server_response(self, response: str) -> None:
+        """Process server's response to manifest and handle file uploads."""
+        if not response.startswith("NEEDS_FILES"):
+            print(" -> All files are in sync.")
+            return
+
+        try:
+            parts = response.split('\n', 1)
+            if len(parts) != 2:
+                raise ValueError(f"Invalid response format: {response}")
+            
+            response_data = json.loads(parts[1].strip())
+            if not isinstance(response_data, dict) or 'files' not in response_data:
+                raise ValueError(f"Invalid JSON format: {response_data}")
+            
+            files_to_upload = response_data['files']
+            if not isinstance(files_to_upload, list):
+                raise ValueError(f"Expected list of files, got: {type(files_to_upload)}")
+            
+            if files_to_upload:
+                print(f" -> Server needs {len(files_to_upload)} file(s). Starting upload...")
+                for file_path in files_to_upload:
+                    print(f"    - Uploading '{file_path}'...")
+                    handle_upload(self.sock, self.server_address, file_path)
             else:
                 print(" -> All files are in sync.")
+                
+        except json.JSONDecodeError as e:
+            print(f"Error parsing server response: {e}")
+            print(f"Raw response: {response}")
+        except ValueError as e:
+            print(f"Error processing server response: {e}")
+
+    def sync_cycle(self) -> bool:
+        """Execute one complete sync cycle."""
+        try:
+            print("\n------------------ New Sync Cycle Started ------------------")
+            
+            # Generate and transfer manifest
+            print(" -> Step 1/3: Generating local MD5 manifest...")
+            manifest = self.generate_md5_manifest("client_files")
+            
+            print(" -> Step 2/3: Transferring manifest to server...")
+            if not self.transfer_manifest(manifest):
+                return False
+
+            # Get server response and process
+            print(" -> Step 3/3: Processing server's file request list...")
+            response, _ = sendAndReceive(self.sock, "SYNC_FINISH", self.server_address)
+            self.process_server_response(response)
 
             print("\n[+] Sync cycle completed successfully.")
             print("------------------------------------------------------------")
+            return True
             
-            # 7. 倒计时等待下一个周期
-            try:
-                for i in range(30, 0, -1):
-                    print(f'\rNext sync in {i} seconds...  ', end='')
-                    time.sleep(1)
-                print('\r                           \r', end='') 
-            except KeyboardInterrupt:
-                raise KeyboardInterrupt
-
-        except KeyboardInterrupt:
-            print("\n[SYNC MODE DEACTIVATED] Returning to command menu.")
-            break
         except Exception as e:
             print(f"\n[ERROR] An error occurred during sync cycle: {e}")
-            print("Waiting 30 seconds before retrying...")
-            time.sleep(30)
+            return False
+
+    def start_sync_mode(self):
+        """Start continuous sync mode with periodic cycles."""
+        print("\n[SYNC MODE ACTIVATED]")
+        print("Client will now sync with the server every 30 seconds.")
+        print("Press Ctrl+C to stop syncing and return to the command menu.")
+        
+        while True:
+            try:
+                if not self.sync_cycle():
+                    print("Waiting 30 seconds before retrying...")
+                    time.sleep(self.sync_interval)
+                    continue
+
+                # Countdown to next sync
+                for i in range(self.sync_interval, 0, -1):
+                    print(f'\rNext sync in {i} seconds...  ', end='')
+                    time.sleep(1)
+                print('\r                           \r', end='')
+                
+            except KeyboardInterrupt:
+                print("\n[SYNC MODE DEACTIVATED] Returning to command menu.")
+                break
+            except Exception as e:
+                print(f"\n[ERROR] An error occurred during sync cycle: {e}")
+                print("Waiting 30 seconds before retrying...")
+                time.sleep(self.sync_interval)
 
 def download_file(filename, server_host, server_info):
     """Handle file download with simplified logic."""
@@ -478,7 +513,8 @@ def handle_command(sock, server_address, command, files, server_host):
     elif command.lower().startswith('supload '):
         handle_super_upload(sock, server_address, command.split(' ', 1)[1])
     elif command.lower() == 'sync':
-        start_sync_mode(sock, server_address)
+        sync_manager = SyncManager(sock, server_address)
+        sync_manager.start_sync_mode()
     elif command.lower() == 'kill':
         handle_kill_command(sock, server_address)
     elif command.lower() == 'all':
