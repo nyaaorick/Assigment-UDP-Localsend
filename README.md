@@ -8,6 +8,7 @@
 All file operations are contained within specific directories: `serverfile` on the server and `client_files` on the client.
 
 ### TRY SYNC MODE !!! ###
+
 ## How to Use
 
 
@@ -38,6 +39,8 @@ in this case you will need enter host next step
 ## Command List
 
 The client accepts the following commands:
+
+##sync  TO ENTER SYNC MODE !!!!!
 
 | Command           | Description                                                                  |
 | :---------------- | :--------------------------------------------------------------------------- |
