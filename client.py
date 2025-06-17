@@ -377,7 +377,7 @@ class SyncManager:
         """Start continuous sync mode with periodic cycles."""
         print("\n[SYNC MODE ACTIVATED]")
         print("Client will now sync with the server every 3 seconds.")
-        print("Press Ctrl+C to stop syncing and return to the command menu.")
+        print("按下Enter键退出sync模式，默认继续同步。")
         
         while True:
             try:
@@ -390,11 +390,14 @@ class SyncManager:
                 for i in range(self.sync_interval, 0, -1):
                     print(f'\rNext sync in {i} seconds...  ', end='')
                     time.sleep(1)
-                print('\r                           \r', end='')
-                
-            except KeyboardInterrupt:
-                print("\n[SYNC MODE DEACTIVATED] Returning to command menu.")
-                break
+                print('\r' + ' ' * 60 + '\r', end='')
+                import sys, select
+                print("press Enter to exit sync mode: ", end='', flush=True)
+                i, o, e = select.select([sys.stdin], [], [], 0.5)
+                if i:
+                    _ = sys.stdin.readline()
+                    print("\n[SYNC MODE DEACTIVATED] (检测到Enter) Returning to command menu.")
+                    break
             except Exception as e:
                 print(f"\n[ERROR] An error occurred during sync cycle: {e}")
                 print("Waiting 3 seconds before retrying...")
@@ -488,15 +491,15 @@ def display_command_menu():
     return input("""
     *！COMMAND MENU ! ^^^^^check the available entries on server^^^^
     ********************************************
-    * sync                - !!!SYNC MODE!!!
-    * <filename>          - Download a file by entering its name
-    * all                 - Download all files in the current directory
+    * sync                         - !!!SYNC MODE!!!
+    * <filename>                   - Download a file by entering its name
+    * all                          - Download all files in the current directory
     * upload <filename> or <path>  - Upload a file to the server
     * supload <folder> or <path>   - Upload an entire folder to the server
-    * cd <folder>         - Change to the specified directory (e.g., cd my_files)
-    * cd ..               - Go back to the parent directory
-    * kill                - kill every files on server
-    * (press enter)       - Exit the client
+    * cd <folder>                  - Change to the specified directory (e.g., cd my_files)
+    * cd ..                        - Go back to the parent directory
+    * kill                         - kill every files on server
+    * (press enter)                - Exit the client
 
     Enter command: """)
 
