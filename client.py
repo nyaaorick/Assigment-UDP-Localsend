@@ -10,11 +10,6 @@ import json    # <-- 新增
 # Create client_files directory at program start
 Path("client_files").mkdir(exist_ok=True)
 
-# ... import 语句之后 ...
-
-# =================================================================
-# --- 新增功能 #1: MD5 清单生成函数 ---
-# =================================================================
 def calculate_md5(file_path: Path) -> str:
     """计算文件的 MD5 哈希值"""
     hash_md5 = hashlib.md5()
@@ -147,14 +142,9 @@ def transfer_file(sock, server_address, file_path, is_upload=True):
 
 def handle_upload(sock, server_address, command_input):
     """
-    处理文件上传。此版本智能处理路径，能够：
-    1. 接受 'data.txt' 这样的简单文件名（在 client_files 中查找）。
-    2. 接受 'images/photo.png' 这样的相对路径（由 sync 功能使用）。
-    3. 接受 '/Users/me/Desktop/report.pdf' 这样的完整外部路径。
+    accept 'data.txt' or 'images/photo.png' or '/Users/me/Desktop/report.pdf'
     """
     input_path_str = command_input.strip().strip('\'"')
-
-    # --- 新增的智能路径解析逻辑 ---
     
     local_path_to_read = None
     path_for_server = None
@@ -183,7 +173,6 @@ def handle_upload(sock, server_address, command_input):
     try:
         # 将路径中的 \ 替换为 / 以兼容协议
         path_for_server_norm = str(path_for_server).replace(os.path.sep, '/')
-        
         # 发送包含正确路径的 UPLOAD 命令
         response_str, _ = sendAndReceive(sock, f"UPLOAD {path_for_server_norm}", server_address)
         
@@ -262,7 +251,7 @@ class SyncManager:
         self.sock = sock
         self.server_address = server_address
         self.chunk_size = 1024
-        self.sync_interval = 30  # seconds
+        self.sync_interval = 3  # seconds
         
     def generate_md5_manifest(self, directory: str) -> dict:
         """Generate a manifest of {path: MD5} for all files in directory."""
@@ -387,13 +376,13 @@ class SyncManager:
     def start_sync_mode(self):
         """Start continuous sync mode with periodic cycles."""
         print("\n[SYNC MODE ACTIVATED]")
-        print("Client will now sync with the server every 30 seconds.")
+        print("Client will now sync with the server every 3 seconds.")
         print("Press Ctrl+C to stop syncing and return to the command menu.")
         
         while True:
             try:
                 if not self.sync_cycle():
-                    print("Waiting 30 seconds before retrying...")
+                    print("Waiting 3 seconds before retrying...")
                     time.sleep(self.sync_interval)
                     continue
 
@@ -408,7 +397,7 @@ class SyncManager:
                 break
             except Exception as e:
                 print(f"\n[ERROR] An error occurred during sync cycle: {e}")
-                print("Waiting 30 seconds before retrying...")
+                print("Waiting 3 seconds before retrying...")
                 time.sleep(self.sync_interval)
 
 def download_file(filename, server_host, server_info):
@@ -499,13 +488,13 @@ def display_command_menu():
     return input("""
     *！COMMAND MENU ! ^^^^^check the available entries on server^^^^
     ********************************************
+    * sync                - !!!SYNC MODE!!!
     * <filename>          - Download a file by entering its name
+    * all                 - Download all files in the current directory
+    * upload <filename> or <path>  - Upload a file to the server
+    * supload <folder> or <path>   - Upload an entire folder to the server
     * cd <folder>         - Change to the specified directory (e.g., cd my_files)
     * cd ..               - Go back to the parent directory
-    * all                 - Download all files in the current directory
-    * upload <filename>   - Upload a file to the server
-    * supload <folder>    - Upload an entire folder to the server
-    * sync                - Enter continuous sync mode (client -> server)
     * kill                - kill every files on server
     * (press enter)       - Exit the client
 
