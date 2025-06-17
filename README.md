@@ -7,7 +7,7 @@
 
 All file operations are contained within specific directories: `serverfile` on the server and `client_files` on the client.
 
-
+### TRY SYNC MODE !!! ###
 ## How to Use
 
 
