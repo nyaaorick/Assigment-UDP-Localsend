@@ -10,6 +10,329 @@ import json    # <-- 新增
 # Create client_files directory at program start
 Path("client_files").mkdir(exist_ok=True)
 
+class Client:
+    def __init__(self, server_host, server_port):
+        """
+        构造函数，初始化客户端的核心状态。
+        """
+        print(f"[INFO] Initializing client for server at {server_host}:{server_port}")
+        self.server_host = server_host
+        self.server_port = server_port
+        self.server_address = (server_host, server_port)
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sync_manager = SyncManager(self)
+
+    def close(self):
+        """
+        关闭客户端连接。
+        """
+        print("\nClient session finished. Exiting.")
+        self.sock.close()
+
+    def send_and_receive(self, message, timeout=1.0, max_retries=5):
+        """
+        发送消息并等待响应，现在使用 self.sock 和 self.server_address。
+        """
+        for attempt in range(max_retries):
+            try:
+                self.sock.settimeout(timeout)
+                self.sock.sendto(message.encode('utf-8'), self.server_address)
+                
+                response_bytes, addr = self.sock.recvfrom(4096)
+                return response_bytes.decode('utf-8'), addr
+
+            except socket.timeout:
+                if attempt < max_retries - 1:
+                    print(f"*** Timeout. Retrying... ({attempt + 1}/{max_retries}) ***")
+                    continue
+                else:
+                    raise Exception(f"Server not responding after {max_retries} attempts.")
+
+    def handle_cd_command(self, command):
+        """处理目录切换命令。"""
+        command_to_send = "CD " + command.split(' ', 1)[1]
+        try:
+            response_str, _ = self.send_and_receive(command_to_send)
+            print(f"Server: {response_str}")
+        except Exception as e:
+            print(f"\n[ERROR] Failed to send cd command: {str(e)}")
+
+    def handle_upload(self, command_input):
+        """
+        accept 'data.txt' or 'images/photo.png' or '/Users/me/Desktop/report.pdf'
+        """
+        input_path_str = command_input.strip().strip('\'"')
+        
+        local_path_to_read = None
+        path_for_server = None
+
+        # 优先级 1: 尝试将输入作为相对于 'client_files' 的路径。
+        path_in_client_files = Path("client_files") / input_path_str
+        if path_in_client_files.is_file():
+            local_path_to_read = path_in_client_files
+            path_for_server = input_path_str
+        
+        # 优先级 2: 如果在 client_files 中找不到，则尝试将其作为直接路径。
+        elif Path(input_path_str).is_file():
+            local_path_to_read = Path(input_path_str)
+            path_for_server = local_path_to_read.name
+        
+        else:
+            print(f"\n[ERROR] File not found. Neither '{path_in_client_files}' nor '{input_path_str}' is a valid file.")
+            return
+
+        try:
+            path_for_server_norm = str(path_for_server).replace(os.path.sep, '/')
+            response_str, _ = self.send_and_receive(f"UPLOAD {path_for_server_norm}")
+            
+            if response_str != "UPLOAD_READY":
+                print(f"\n[ERROR] Server not ready for upload: {response_str}")
+                return
+
+            if self.transfer_file(local_path_to_read, is_upload=True):
+                response_str, _ = self.send_and_receive("UPLOAD_DONE")
+                if response_str == "UPLOAD_COMPLETE":
+                    print(f"\n[SUCCESS] File '{path_for_server_norm}' uploaded successfully!")
+                else:
+                    print(f"\n[WARNING] Unexpected final response: {response_str}")
+            else:
+                print(f"\n[ERROR] Upload failed for '{path_for_server_norm}'")
+
+        except Exception as e:
+            print(f"\n[ERROR] Upload failed: {str(e)}")
+
+    def transfer_file_chunk(self, chunk, chunk_size=1024):
+        """
+        Transfer a single chunk of data with retry mechanism.
+        """
+        try:
+            encoded_chunk = base64.b64encode(chunk).decode('utf-8')
+            data_message = f"DATA {encoded_chunk}"
+            response_str, _ = self.send_and_receive(data_message)
+            return response_str == "ACK_DATA"
+        except Exception:
+            return False
+
+    def transfer_file(self, file_path, is_upload=True):
+        """
+        Generic file transfer function for both upload and download.
+        """
+        try:
+            file_path = Path(file_path)
+            if is_upload:
+                if not file_path.is_file():
+                    print(f"[ERROR] File not found: {file_path}")
+                    return False
+                    
+                file_size = file_path.stat().st_size
+                with open(file_path, 'rb') as f:
+                    bytes_sent = 0
+                    while True:
+                        chunk = f.read(1024)
+                        if not chunk:
+                            break
+                        if not self.transfer_file_chunk(chunk):
+                            return False
+                        bytes_sent += len(chunk)
+                        progress = (bytes_sent / file_size) * 100
+                        print(f"\rUpload progress: {progress:.2f}% ({bytes_sent}/{file_size} bytes)", end='')
+                return True
+                
+            else:  # Download
+                with open(file_path, 'wb') as f:
+                    bytes_received = 0
+                    while True:
+                        response_str, _ = self.send_and_receive("GET_CHUNK")
+                        if response_str == "TRANSFER_COMPLETE":
+                            break
+                        if not response_str.startswith("DATA "):
+                            return False
+                            
+                        data = base64.b64decode(response_str[5:])
+                        f.write(data)
+                        bytes_received += len(data)
+                        print(f"\rDownload progress: {bytes_received} bytes", end='')
+                return True
+                
+        except Exception as e:
+            print(f"\n[ERROR] Transfer failed: {str(e)}")
+            return False
+
+    def handle_super_upload(self, local_folder_path):
+        """Handle folder upload with simplified logic."""
+        folder_path = Path(local_folder_path.strip().strip('\'"'))
+        if not folder_path.is_dir():
+            print(f"\n[ERROR] '{folder_path}' is not a valid directory.")
+            return
+
+        try:
+            files = [f for f in folder_path.rglob("*") if f.is_file()]
+            if not files:
+                print(f"\n[ERROR] No files found in '{folder_path}'")
+                return
+
+            dirs = [str(d.relative_to(folder_path)).replace("\\", "/") 
+                    for d in folder_path.rglob("*") if d.is_dir()]
+            
+            structure_payload = f"SUPLOAD_STRUCTURE {folder_path.name}\n" + "\n".join(dirs)
+            response_str, _ = self.send_and_receive(structure_payload)
+            if response_str != "STRUCTURE_OK":
+                print(f"\n[ERROR] Failed to create directory structure: {response_str}")
+                return
+
+            for i, file_path in enumerate(files, 1):
+                rel_path = str(file_path.relative_to(folder_path)).replace("\\", "/")
+                print(f"\n({i}/{len(files)}) Uploading: {rel_path}")
+                
+                response_str, _ = self.send_and_receive(f"SUPLOAD_FILE {rel_path}")
+                if response_str != "FILE_READY":
+                    print(f"[WARNING] Server not ready for '{rel_path}', skipping.")
+                    continue
+
+                if self.transfer_file(file_path, is_upload=True):
+                    response_str, _ = self.send_and_receive("UPLOAD_DONE")
+                    if response_str != "UPLOAD_COMPLETE":
+                        print(f"[WARNING] Unexpected response for '{rel_path}': {response_str}")
+                else:
+                    print(f"[ERROR] Failed to upload '{rel_path}'")
+
+            response_str, _ = self.send_and_receive("SUPLOAD_COMPLETE")
+            if response_str == "SUPLOAD_OK":
+                print(f"\n[SUCCESS] Folder '{folder_path.name}' uploaded completely!")
+            else:
+                print(f"\n[WARNING] Unexpected final response: {response_str}")
+
+        except Exception as e:
+            print(f"\n[ERROR] Upload failed: {str(e)}")
+
+    def handle_kill_command(self):
+        """Handle kill command to delete all server files."""
+        try:
+            response_str, _ = self.send_and_receive("KILL_SERVER_FILES")
+            if response_str.startswith("KILL_OK"):
+                print("\n[SUCCESS] All files on server have been deleted successfully.")
+            elif response_str.startswith("KILL_ERR"):
+                print("\n[ERROR] Failed to delete files on server.")
+            else:
+                print(f"\n[WARNING] Unexpected response from server: {response_str}")
+        except Exception as e:
+            print(f"\n[ERROR] Failed to send kill command: {str(e)}")
+
+    def handle_all_command(self, files):
+        """Handle download all files command."""
+        if not files:
+            print("No files available to download.")
+            return
+            
+        for file_to_download in files:
+            if file_to_download.endswith('/'):
+                continue
+                
+            message = f"DOWNLOAD {file_to_download}"
+            try:
+                response_str, _ = self.send_and_receive(message)
+                if response_str.startswith("OK"):
+                    parts = response_str.split()
+                    server_info = (int(parts[3]), int(parts[5]))
+                    self.download_file(parts[1], server_info)
+                elif response_str.startswith("ERR"):
+                    print(f"Error: File '{file_to_download}' not found on server")
+            except Exception as e:
+                print(f"Error during download of '{file_to_download}': {str(e)}")
+                continue
+        print("\nBatch download completed.")
+
+    def handle_single_download(self, filename):
+        """Handle single file download command."""
+        message = f"DOWNLOAD {filename}"
+        try:
+            response_str, _ = self.send_and_receive(message)
+            if response_str.startswith("OK"):
+                parts = response_str.split()
+                server_info = (int(parts[3]), int(parts[5]))
+                self.download_file(parts[1], server_info)
+            elif response_str.startswith("ERR"):
+                print("Error: File not found on server")
+        except Exception as e:
+            print(f"Error during initial request: {str(e)}")
+
+    def download_file(self, filename, server_info):
+        """Handle file download with simplified logic."""
+        file_size, data_port = server_info
+        server_data_address = (self.server_host, data_port)
+        data_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        local_file_path = Path("client_files") / Path(filename).name
+
+        try:
+            response_str, _ = self.send_and_receive(f"DOWNLOAD {filename}")
+            if response_str != "DOWNLOAD_READY":
+                print(f"[ERROR] Server not ready for download: {response_str}")
+                return
+
+            if self.transfer_file(local_file_path, is_upload=False):
+                print(f"\n[SUCCESS] File '{filename}' downloaded successfully!")
+            else:
+                print(f"\n[ERROR] Download failed for '{filename}'")
+
+        except Exception as e:
+            print(f"[ERROR] Download failed: {str(e)}")
+        finally:
+            data_sock.close()
+
+    def display_server_files(self):
+        """
+        Display list of files available on the server.
+        
+        Returns:
+            list: List of available files
+        """
+        try:
+            response_str, _ = self.send_and_receive("LIST_FILES")
+            if response_str.startswith("OK"):
+                files = response_str.split()[1:]
+                print("\nAvailable entries on server:")
+                print(" ".join(files) if files else "(empty)")
+                print("-" * 50)
+                return files
+            else:
+                print("Error: Could not get file list from server")
+                return []
+        except Exception as e:
+            print(f"Error getting file list: {str(e)}")
+            return []
+
+    def run(self):
+        """
+        客户端的主运行循环。
+        """
+        try:
+            while True:
+                files = self.display_server_files()
+                command = display_command_menu()
+                
+                if not command:
+                    break
+                
+                if command.lower().startswith('cd '):
+                    self.handle_cd_command(command)
+                elif command.lower().startswith('upload '):
+                    self.handle_upload(command.split(' ', 1)[1])
+                elif command.lower().startswith('supload '):
+                    self.handle_super_upload(command.split(' ', 1)[1])
+                elif command.lower() == 'sync':
+                    self.sync_manager.start_sync_mode()
+                elif command.lower() == 'kill':
+                    self.handle_kill_command()
+                elif command.lower() == 'all':
+                    self.handle_all_command(files)
+                else:
+                    self.handle_single_download(command)
+
+        except Exception as e:
+            print(f"\n[ERROR] An error occurred in the client loop: {e}")
+        finally:
+            self.close()
+
 def calculate_md5(file_path: Path) -> str:
     """计算文件的 MD5 哈希值"""
     hash_md5 = hashlib.md5()
@@ -135,7 +458,7 @@ def transfer_file(sock, server_address, file_path, is_upload=True):
                     bytes_received += len(data)
                     print(f"\rDownload progress: {bytes_received} bytes", end='')
             return True
-            
+                
     except Exception as e:
         print(f"\n[ERROR] Transfer failed: {str(e)}")
         return False
@@ -247,9 +570,8 @@ def handle_super_upload(sock, server_address, local_folder_path):
 class SyncManager:
     """Manages file synchronization between client and server."""
     
-    def __init__(self, sock, server_address):
-        self.sock = sock
-        self.server_address = server_address
+    def __init__(self, client):
+        self.client = client
         self.chunk_size = 1024
         self.sync_interval = 3  # seconds
         
@@ -276,16 +598,14 @@ class SyncManager:
             num_chunks = len(chunks)
 
             # Start sync session
-            response, _ = sendAndReceive(self.sock, f"SYNC_START {num_chunks}", self.server_address)
+            response, _ = self.client.send_and_receive(f"SYNC_START {num_chunks}")
             if response != "SYNC_READY":
                 raise Exception(f"Server not ready for sync. Response: {response}")
 
             # Transfer chunks
             for i, chunk in enumerate(chunks):
-                ack_response, _ = sendAndReceive(
-                    self.sock, 
-                    f"SYNC_CHUNK {i}/{num_chunks}\n{chunk}", 
-                    self.server_address
+                ack_response, _ = self.client.send_and_receive(
+                    f"SYNC_CHUNK {i}/{num_chunks}\n{chunk}"
                 )
                 if ack_response != f"ACK_CHUNK {i}":
                     raise Exception(f"Manifest chunk {i} upload failed. ACK not received.")
@@ -316,7 +636,7 @@ class SyncManager:
                 for i in range(num_chunks):
                     # Use existing sendAndReceive for reliable chunk fetching
                     command = f"GET_SYNC_CHUNK {i}"
-                    chunk_data, _ = sendAndReceive(self.sock, command, self.server_address, timeout=5.0)
+                    chunk_data, _ = self.client.send_and_receive(command, timeout=5.0)
                     chunks.append(chunk_data)
                     print(f"\r -> Receiving file list... {i+1}/{num_chunks}", end="")
                 
@@ -336,7 +656,7 @@ class SyncManager:
                     print(f" -> Server needs {len(files_to_upload)} file(s). Starting upload...")
                     for file_path in files_to_upload:
                         print(f"    - Uploading '{file_path}'...")
-                        handle_upload(self.sock, self.server_address, file_path)
+                        self.client.handle_upload(file_path)
                 else:
                     print(" -> All files are in sync.")
             
@@ -362,7 +682,7 @@ class SyncManager:
 
             # Get server response and process
             print(" -> Step 3/3: Processing server's file request list...")
-            response, _ = sendAndReceive(self.sock, "SYNC_FINISH", self.server_address)
+            response, _ = self.client.send_and_receive("SYNC_FINISH")
             self.process_server_response(response)
 
             print("\n[+] Sync cycle completed successfully.")
@@ -388,7 +708,7 @@ class SyncManager:
 
                 # Countdown to next sync
                 for i in range(self.sync_interval, 0, -1):
-                    print(f'\rNext sync in {i} seconds...  ', end='')
+                    print(f'\rNext sync in {i} seconds-press Enter to exit sync mode ', end='')
                     time.sleep(1)
                 print('\r' + ' ' * 60 + '\r', end='')
                 import sys, select
@@ -464,28 +784,6 @@ def get_server_address():
     
     return server_host, server_port
 
-def display_server_files(sock, server_address):
-    """
-    Display list of files available on the server.
-    
-    Returns:
-        list: List of available files
-    """
-    try:
-        response_str, _ = sendAndReceive(sock, "LIST_FILES", server_address)
-        if response_str.startswith("OK"):
-            files = response_str.split()[1:]
-            print("\nAvailable entries on server:")
-            print(" ".join(files) if files else "(empty)")
-            print("-" * 50)
-            return files
-        else:
-            print("Error: Could not get file list from server")
-            return []
-    except Exception as e:
-        print(f"Error getting file list: {str(e)}")
-        return []
-
 def display_command_menu():
     """Display the command menu to the user."""
     return input("""
@@ -503,118 +801,19 @@ def display_command_menu():
 
     Enter command: """)
 
-def handle_command(sock, server_address, command, files, server_host):
-    """
-    Handle user command and execute appropriate action.
-    
-    Args:
-        sock: Socket for communication
-        server_address: Server address tuple
-        command: User command
-        files: List of available files on server
-        server_host: Server hostname
-    """
-    if not command:
-        return False
-        
-    if command.lower().startswith('cd '):
-        handle_cd_command(sock, server_address, command)
-    elif command.lower().startswith('upload '):
-        handle_upload(sock, server_address, command.split(' ', 1)[1])
-    elif command.lower().startswith('supload '):
-        handle_super_upload(sock, server_address, command.split(' ', 1)[1])
-    elif command.lower() == 'sync':
-        sync_manager = SyncManager(sock, server_address)
-        sync_manager.start_sync_mode()
-    elif command.lower() == 'kill':
-        handle_kill_command(sock, server_address)
-    elif command.lower() == 'all':
-        handle_all_command(sock, server_address, files, server_host)
-    else:
-        handle_single_download(sock, server_address, command, server_host)
-    
-    return True
-
-def handle_cd_command(sock, server_address, command):
-    """Handle directory change command."""
-    command_to_send = "CD " + command.split(' ', 1)[1]
-    try:
-        response_str, _ = sendAndReceive(sock, command_to_send, server_address)
-        print(f"Server: {response_str}")
-    except Exception as e:
-        print(f"\n[ERROR] Failed to send cd command: {str(e)}")
-
-def handle_kill_command(sock, server_address):
-    """Handle kill command to delete all server files."""
-    try:
-        response_str, _ = sendAndReceive(sock, "KILL_SERVER_FILES", server_address)
-        if response_str.startswith("KILL_OK"):
-            print("\n[SUCCESS] All files on server have been deleted successfully.")
-        elif response_str.startswith("KILL_ERR"):
-            print("\n[ERROR] Failed to delete files on server.")
-        else:
-            print(f"\n[WARNING] Unexpected response from server: {response_str}")
-    except Exception as e:
-        print(f"\n[ERROR] Failed to send kill command: {str(e)}")
-
-def handle_all_command(sock, server_address, files, server_host):
-    """Handle download all files command."""
-    if not files:
-        print("No files available to download.")
-        return
-        
-    for file_to_download in files:
-        if file_to_download.endswith('/'):
-            continue
-            
-        message = f"DOWNLOAD {file_to_download}"
-        try:
-            response_str, _ = sendAndReceive(sock, message, server_address)
-            if response_str.startswith("OK"):
-                parts = response_str.split()
-                server_info = (int(parts[3]), int(parts[5]))
-                download_file(parts[1], server_host, server_info)
-            elif response_str.startswith("ERR"):
-                print(f"Error: File '{file_to_download}' not found on server")
-        except Exception as e:
-            print(f"Error during download of '{file_to_download}': {str(e)}")
-            continue
-    print("\nBatch download completed.")
-
-def handle_single_download(sock, server_address, filename, server_host):
-    """Handle single file download command."""
-    message = f"DOWNLOAD {filename}"
-    try:
-        response_str, _ = sendAndReceive(sock, message, server_address)
-        if response_str.startswith("OK"):
-            parts = response_str.split()
-            server_info = (int(parts[3]), int(parts[5]))
-            download_file(parts[1], server_host, server_info)
-        elif response_str.startswith("ERR"):
-            print("Error: File not found on server")
-    except Exception as e:
-        print(f"Error during initial request: {str(e)}")
-
 def main():
-    """Main function to run the client."""
+    """
+    主入口：获取配置，创建客户端实例，然后运行它。
+    """
     server_host, server_port = get_server_address()
-    server_address = (server_host, server_port)
-    client_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     
-    try:
-        while True:
-            files = display_server_files(client_sock, server_address)
-            command = display_command_menu()
-            
-            if not handle_command(client_sock, server_address, command, files, server_host):
-                break
-                
-    except Exception as e:
-        print(f"Error: {str(e)}")
-    finally:
-        print("\nClient session finished. Exiting.")
-        client_sock.close()
+    # 检查是否成功获取地址
+    if not server_host:
+        print("[ERROR] Invalid server host provided. Exiting.")
+        return
 
+    client = Client(server_host, server_port)
+    client.run()
 
 if __name__ == "__main__":
     main()
