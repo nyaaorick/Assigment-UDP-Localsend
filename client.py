@@ -33,22 +33,6 @@ def generate_md5_manifest(directory: str) -> dict:
     return manifest
 
 def sendAndReceive(sock, message, server_address, timeout=1.0, max_retries=5):
-    """
-    Send a message to the server and wait for a response with retry mechanism.
-    
-    Args:
-        sock: UDP socket for communication
-        message: Message to send
-        server_address: Server address tuple (host, port)
-        timeout: Timeout in seconds for each attempt
-        max_retries: Maximum number of retry attempts
-        
-    Returns:
-        tuple: (response_string, server_address)
-        
-    Raises:
-        Exception: If server doesn't respond after all retries
-    """
     for attempt in range(max_retries):
         try:
             sock.settimeout(timeout)
@@ -64,134 +48,106 @@ def sendAndReceive(sock, message, server_address, timeout=1.0, max_retries=5):
             else:
                 raise Exception(f"Server not responding after {max_retries} attempts.")
 
-
-def transfer_file_chunk(sock, server_address, chunk, chunk_size=1024):
-    """
-    Transfer a single chunk of data with retry mechanism.
-    
-    Args:
-        sock: Socket for communication
-        server_address: Server address tuple
-        chunk: Data chunk to transfer
-        chunk_size: Size of each chunk
-        
-    Returns:
-        bool: True if transfer successful, False otherwise
-    """
+def _perform_upload(sock, server_address, local_path: Path, remote_path: str, verbose: bool = True) -> bool:
     try:
-        encoded_chunk = base64.b64encode(chunk).decode('utf-8')
-        data_message = f"DATA {encoded_chunk}"
-        response_str, _ = sendAndReceive(sock, data_message, server_address)
-        return response_str == "ACK_DATA"
-    except Exception:
+        file_size = local_path.stat().st_size
+        
+        # 1. 发送 UPLOAD 命令，告知服务器准备接收
+        response_str, _ = sendAndReceive(sock, f"UPLOAD {remote_path}", server_address)
+        if response_str != "UPLOAD_READY":
+            if verbose: print(f"\n[ERROR] Server not ready for upload: {response_str}")
+            return False
+
+        # 2. 开始分块传输
+        with local_path.open("rb") as f:
+            bytes_sent = 0
+            while True:
+                chunk = f.read(1024)
+                if not chunk:
+                    break
+                
+                # 直接在这里发送数据块，不再需要 transfer_file_chunk
+                encoded_chunk = base64.b64encode(chunk).decode('utf-8')
+                data_message = f"DATA {encoded_chunk}"
+                response_str, _ = sendAndReceive(sock, data_message, server_address)
+                
+                if response_str != "ACK_DATA":
+                    if verbose: print(f"\n[ERROR] Failed to get ACK for a chunk.")
+                    return False
+
+                bytes_sent += len(chunk)
+                if verbose:
+                    progress = (bytes_sent / file_size) * 100 if file_size > 0 else 100
+                    print(f"\rUpload progress: {progress:.2f}% ({bytes_sent}/{file_size} bytes)", end='')
+
+        # 3. 发送上传完成信号
+        response_str, _ = sendAndReceive(sock, "UPLOAD_DONE", server_address)
+        if response_str == "UPLOAD_COMPLETE":
+            if verbose: print(f"\n[SUCCESS] File '{remote_path}' uploaded successfully!")
+            return True
+        else:
+            if verbose: print(f"\n[WARNING] Unexpected final response: {response_str}")
+            return False
+
+    except Exception as e:
+        if verbose: print(f"\n[ERROR] Upload failed: {str(e)}")
         return False
 
-def transfer_file(sock, server_address, file_path, is_upload=True):
-    """
-    Generic file transfer function for both upload and download.
-    
-    Args:
-        sock: Socket for communication
-        server_address: Server address tuple
-        file_path: Path to the file
-        is_upload: True for upload, False for download
-        
-    Returns:
-        bool: True if transfer successful, False otherwise
-    """
+def _perform_download(sock, server_address, remote_filename: str, local_path: Path) -> bool:
     try:
-        file_path = Path(file_path)
-        if is_upload:
-            if not file_path.is_file():
-                print(f"[ERROR] File not found: {file_path}")
-                return False
-                
-            file_size = file_path.stat().st_size
-            with open(file_path, 'rb') as f:
-                bytes_sent = 0
-                while True:
-                    chunk = f.read(1024)
-                    if not chunk:
-                        break
-                    if not transfer_file_chunk(sock, server_address, chunk):
-                        return False
-                    bytes_sent += len(chunk)
-                    progress = (bytes_sent / file_size) * 100
-                    print(f"\rUpload progress: {progress:.2f}% ({bytes_sent}/{file_size} bytes)", end='')
-            return True
+        # 1. 发送 DOWNLOAD 命令 (此处的 socket 是主命令 socket)
+        # 注意: 你的原逻辑是新开一个端口，这里为了简化，我们假设仍在同一个 socket 上通信
+        # 如果必须在新端口，则此函数需要接收一个新的 data_sock
+        response_str, _ = sendAndReceive(sock, f"DOWNLOAD {remote_filename}", server_address)
+        if response_str != "DOWNLOAD_READY":
+            print(f"[ERROR] Server not ready for download: {response_str}")
+            return False
             
-        else:  # Download
-            with open(file_path, 'wb') as f:
-                bytes_received = 0
-                while True:
-                    response_str, _ = sendAndReceive(sock, "GET_CHUNK", server_address)
-                    if response_str == "TRANSFER_COMPLETE":
-                        break
-                    if not response_str.startswith("DATA "):
-                        return False
-                        
-                    data = base64.b64decode(response_str[5:])
-                    f.write(data)
-                    bytes_received += len(data)
-                    print(f"\rDownload progress: {bytes_received} bytes", end='')
-            return True
-            
+        # 2. 开始分块接收
+        with local_path.open("wb") as f:
+            bytes_received = 0
+            while True:
+                response_str, _ = sendAndReceive(sock, "GET_CHUNK", server_address)
+                if response_str == "TRANSFER_COMPLETE":
+                    break
+                if not response_str.startswith("DATA "):
+                    print("\n[ERROR] Invalid data chunk received from server.")
+                    return False
+                    
+                data = base64.b64decode(response_str[5:])
+                f.write(data)
+                bytes_received += len(data)
+                print(f"\rDownload progress: {bytes_received} bytes received", end='')
+        
+        print(f"\n[SUCCESS] File '{remote_filename}' downloaded successfully to '{local_path}'!")
+        return True
+
     except Exception as e:
-        print(f"\n[ERROR] Transfer failed: {str(e)}")
+        print(f"\n[ERROR] Download failed: {str(e)}")
         return False
 
 def handle_upload(sock, server_address, command_input):
-    """
-    accept 'data.txt' or 'images/photo.png' or '/Users/me/Desktop/report.pdf'
-    """
+    """Handles the user 'upload' command by resolving paths and calling the core upload function."""
     input_path_str = command_input.strip().strip('\'"')
-    
+
     local_path_to_read = None
     path_for_server = None
 
-    # 优先级 1: 尝试将输入作为相对于 'client_files' 的路径。
-    # 这同时满足了【用例1】和【用例2】。
     path_in_client_files = Path("client_files") / input_path_str
     if path_in_client_files.is_file():
         local_path_to_read = path_in_client_files
-        # 发送给服务器的路径就是这个相对路径
         path_for_server = input_path_str
-    
-    # 优先级 2: 如果在 client_files 中找不到，则尝试将其作为直接路径（可能是绝对路径）。
-    # 这满足了【用例3】。
     elif Path(input_path_str).is_file():
         local_path_to_read = Path(input_path_str)
-        # 对于外部文件，我们只把文件名本身传到服务器的当前目录
         path_for_server = local_path_to_read.name
-    
     else:
-        print(f"\n[ERROR] File not found. Neither '{path_in_client_files}' nor '{input_path_str}' is a valid file.")
+        print(f"\n[ERROR] File not found at '{path_in_client_files}' or '{input_path_str}'.")
         return
-        
-    # --- 路径解析逻辑结束 ---
 
-    try:
-        # 将路径中的 \ 替换为 / 以兼容协议
-        path_for_server_norm = str(path_for_server).replace(os.path.sep, '/')
-        # 发送包含正确路径的 UPLOAD 命令
-        response_str, _ = sendAndReceive(sock, f"UPLOAD {path_for_server_norm}", server_address)
-        
-        if response_str != "UPLOAD_READY":
-            print(f"\n[ERROR] Server not ready for upload: {response_str}")
-            return
+    path_for_server_norm = str(path_for_server).replace(os.path.sep, '/')
 
-        # 使用解析出的完整本地路径来读取和传输文件
-        if transfer_file(sock, server_address, local_path_to_read, is_upload=True):
-            response_str, _ = sendAndReceive(sock, "UPLOAD_DONE", server_address)
-            if response_str == "UPLOAD_COMPLETE":
-                print(f"\n[SUCCESS] File '{path_for_server_norm}' uploaded successfully!")
-            else:
-                print(f"\n[WARNING] Unexpected final response: {response_str}")
-        else:
-            print(f"\n[ERROR] Upload failed for '{path_for_server_norm}'")
-
-    except Exception as e:
-        print(f"\n[ERROR] Upload failed: {str(e)}")
+    # 直接调用核心上传函数，并要求详细输出
+    _perform_upload(sock, server_address, local_path_to_read, path_for_server_norm, verbose=True)
 
 def handle_super_upload(sock, server_address, local_folder_path):
     """Handle folder upload with simplified logic."""
@@ -227,7 +183,7 @@ def handle_super_upload(sock, server_address, local_folder_path):
                 print(f"[WARNING] Server not ready for '{rel_path}', skipping.")
                 continue
 
-            if transfer_file(sock, server_address, file_path, is_upload=True):
+            if _perform_upload(sock, server_address, file_path, rel_path):
                 response_str, _ = sendAndReceive(sock, "UPLOAD_DONE", server_address)
                 if response_str != "UPLOAD_COMPLETE":
                     print(f"[WARNING] Unexpected response for '{rel_path}': {response_str}")
@@ -254,18 +210,8 @@ class SyncManager:
         self.sync_interval = 3  # seconds
         
     def generate_md5_manifest(self, directory: str) -> dict:
-        """Generate a manifest of {path: MD5} for all files in directory."""
-        manifest = {}
-        base_dir = Path(directory)
-        try:
-            for item in base_dir.rglob('*'):
-                if item.is_file():
-                    relative_path = str(item.relative_to(base_dir)).replace(os.path.sep, '/')
-                    manifest[relative_path] = calculate_md5(item)
-                    print(f"Debug: Added to client manifest - {relative_path}: {manifest[relative_path]}")
-        except Exception as e:
-            print(f"Error generating client manifest: {e}")
-        return manifest
+        """Generate a manifest by calling the global utility function."""
+        return generate_md5_manifest(directory)
 
     def transfer_manifest(self, manifest: dict) -> bool:
         """Transfer the manifest to server in chunks."""
@@ -333,17 +279,22 @@ class SyncManager:
                     raise ValueError("Expected list of files")
                 
                 if files_to_upload:
-                    print(f" -> Server needs {len(files_to_upload)} file(s). Starting upload...")
-                    for file_path in files_to_upload:
-                        print(f"    - Uploading '{file_path}'...")
-                        handle_upload(self.sock, self.server_address, file_path)
+                    print(f" -> Server needs {len(files_to_upload)} file(s). Starting sync upload...")
+                    for file_path_str in files_to_upload:
+                        # 对于同步，我们只关心 client_files 目录下的文件
+                        local_path = Path("client_files") / file_path_str
+                        if local_path.is_file():
+                            print(f"    - Syncing '{file_path_str}'...", end='')
+                            # 调用核心上传函数，但设置 verbose=False 来禁止详细输出
+                            success = _perform_upload(self.sock, self.server_address, local_path, file_path_str, verbose=False)
+                            print(" OK" if success else " FAILED")
+                        else:
+                            print(f"    - Skipping '{file_path_str}': Not found locally.")
                 else:
                     print(" -> All files are in sync.")
-            
             except Exception as e:
                 print(f"\n[ERROR] Failed to process server's sync response: {e}")
                 print(f"Raw response: {response}")
-
         else:
             print(f"\n[WARNING] Received unexpected response from server: {response}")
 
@@ -404,27 +355,13 @@ class SyncManager:
                 time.sleep(self.sync_interval)
 
 def download_file(filename, server_host, server_info):
-    """Handle file download with simplified logic."""
-    file_size, data_port = server_info
+    """Handle file download by creating a new data socket and calling the core download function."""
+    _file_size, data_port = server_info
     server_data_address = (server_host, data_port)
-    data_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     local_file_path = Path("client_files") / Path(filename).name
 
-    try:
-        response_str, _ = sendAndReceive(data_sock, f"DOWNLOAD {filename}", server_data_address)
-        if response_str != "DOWNLOAD_READY":
-            print(f"[ERROR] Server not ready for download: {response_str}")
-            return
-
-        if transfer_file(data_sock, server_data_address, local_file_path, is_upload=False):
-            print(f"\n[SUCCESS] File '{filename}' downloaded successfully!")
-        else:
-            print(f"\n[ERROR] Download failed for '{filename}'")
-
-    except Exception as e:
-        print(f"[ERROR] Download failed: {str(e)}")
-    finally:
-        data_sock.close()
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as data_sock:
+        _perform_download(data_sock, server_data_address, filename, local_file_path)
 
 def parse_command_line_args():
     """
@@ -449,12 +386,6 @@ def parse_command_line_args():
         sys.exit(1)
 
 def get_server_address():
-    """
-    Get server address either from command line or user input.
-    
-    Returns:
-        tuple: (server_host, server_port)
-    """
     server_host, server_port = parse_command_line_args()
     
     if server_host is None:
@@ -465,12 +396,7 @@ def get_server_address():
     return server_host, server_port
 
 def display_server_files(sock, server_address):
-    """
-    Display list of files available on the server.
-    
-    Returns:
-        list: List of available files
-    """
+
     try:
         response_str, _ = sendAndReceive(sock, "LIST_FILES", server_address)
         if response_str.startswith("OK"):
@@ -504,16 +430,6 @@ def display_command_menu():
     Enter command: """)
 
 def handle_command(sock, server_address, command, files, server_host):
-    """
-    Handle user command and execute appropriate action.
-    
-    Args:
-        sock: Socket for communication
-        server_address: Server address tuple
-        command: User command
-        files: List of available files on server
-        server_host: Server hostname
-    """
     if not command:
         return False
         
