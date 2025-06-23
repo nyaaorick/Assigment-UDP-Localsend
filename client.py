@@ -7,9 +7,6 @@ from pathlib import Path
 import hashlib # <-- 新增
 import json    # <-- 新增
 
-# ===============================================================================
-# Configuration Management - START
-# ===============================================================================
 
 CONFIG_FILE = "sync_config.json"
 
@@ -28,10 +25,6 @@ def save_sync_config(config: list):
     """将同步对保存到配置文件。"""
     with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
         json.dump(config, f, indent=2)
-
-# ===============================================================================
-# Configuration Management - END
-# ===============================================================================
 
 # Create client_files directory at program start
 Path("client_files").mkdir(exist_ok=True)
@@ -463,7 +456,6 @@ def display_command_menu():
     * sync run                     - Run a one-time sync for all pairs
     * sync auto                    - Start continuous automatic syncing
     ********************************************
-    * sync                         - !!!SYNC MODE!!!
     * <filename>                   - Download a file by entering its name
     * all                          - Download all files in the current directory
     * upload <filename> or <path>  - Upload a file to the server

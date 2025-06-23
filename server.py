@@ -462,6 +462,7 @@ class FileServer:
         self.sync_handler = SyncHandler(config)  # Add sync handler
         self.client_paths = {}
         self.server_sock = None
+        self.is_syncing = False  # <-- 新增：一个简单的布尔标志
 
     def start(self) -> None:
         """Start the server"""
@@ -490,6 +491,18 @@ class FileServer:
         parts = message_str.split('\n', 1)
         command_line = parts[0]
         payload = parts[1] if len(parts) > 1 else ""
+        
+        # --- 新增的、极简的锁定检查 ---
+        # 1. 检查服务器是否正在同步
+        # 2. 并且检查进来的命令不是一个同步流程中的后续命令
+        allowed_sync_commands = ("SYNC_CHUNK", "SYNC_FINISH", "GET_SYNC_CHUNK")
+        if self.is_syncing and not command_line.startswith(allowed_sync_commands):
+            # 3. 如果是其他命令 (如 UPLOAD, DOWNLOAD, LIST_FILES, 或一个新的 SYNC_START)，则拒绝
+            rejection_message = b"server syncing , plz wait"
+            print(f"[REJECT] Request '{command_line}' from {client_addr} rejected. Server is syncing.")
+            self.server_sock.sendto(rejection_message, client_addr)
+            return  # 直接返回，不处理该请求
+        # --- 检查结束 ---
         
         print(f"[Main Port] Request from {client_addr}: '{command_line}'")
         current_client_path = self.client_paths.get(client_addr, self.config.base_dir)
@@ -569,6 +582,16 @@ class FileServer:
 
     def _handle_sync_start(self, command_line: str, client_addr: tuple) -> None:
         """Handle SYNC_START <remote_path> <num_chunks> command."""
+        # 检查是否已有另一个同步在进行
+        if self.is_syncing:
+            print(f"[REJECT] New sync from {client_addr} rejected. Server is already syncing.")
+            self.server_sock.sendto(b"server syncing , plz wait", client_addr)
+            return
+
+        # 设置同步状态为 True
+        self.is_syncing = True
+        print(f"[LOCK] Server is now locked for SYNC operation by {client_addr}.")
+
         try:
             parts = command_line.split(' ', 2) # 最多分割两次
             remote_path = parts[1]
@@ -598,9 +621,14 @@ class FileServer:
             self.server_sock.sendto(b"ERR_INVALID_CHUNK_COMMAND", client_addr)
 
     def _handle_sync_finish(self, client_addr: tuple) -> None:
-        """Handle SYNC_FINISH command."""
-        success, response = self.sync_handler.process_manifest(client_addr)
-        self.server_sock.sendto(response.encode('utf-8'), client_addr)
+        """Handle SYNC_FINISH command and ensure server unlocks."""
+        try:
+            success, response = self.sync_handler.process_manifest(client_addr)
+            self.server_sock.sendto(response.encode('utf-8'), client_addr)
+        finally:
+            # 无论成功与否，最后都必须将标志设回 False
+            self.is_syncing = False
+            print(f"[UNLOCK] Server is now unlocked. Sync operation for {client_addr} has finished.")
 
     def _handle_get_sync_chunk(self, command_line: str, client_addr: tuple) -> None:
         """Handle GET_SYNC_CHUNK command."""
