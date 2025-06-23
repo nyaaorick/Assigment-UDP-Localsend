@@ -302,17 +302,19 @@ class SyncHandler:
         self.config = config
         self.sessions = {}  # Store sync sessions
         
-    def start_sync_session(self, client_addr: tuple, total_chunks: int) -> bool:
+    def start_sync_session(self, client_addr: tuple, remote_path: str, total_chunks: int) -> bool:
         """Start a new sync session for a client."""
         try:
             session_key = f"sync-{client_addr}"
             self.sessions[session_key] = {
+                'remote_path': remote_path,
                 'chunks': [],
                 'total': total_chunks,
                 'start_time': time.time()
             }
             print(f"\n[Sync] ====== New Sync Session Started ======")
             print(f"  [Sync] Client: {client_addr}")
+            print(f"  [Sync] Target Remote Path: '{remote_path}'")
             print(f"  [Sync] Total chunks expected: {total_chunks}")
             return True
         except Exception as e:
@@ -346,25 +348,37 @@ class SyncHandler:
             return False, "ERR_NO_SYNC_SESSION"
             
         try:
-            # Combine chunks and parse manifest
             full_manifest_str = "".join(session['chunks'])
             client_manifest = json.loads(full_manifest_str)
             print(f"\nDebug: Client manifest size: {len(client_manifest)} items")
             
-            # Generate server manifest
-            server_manifest = generate_md5_manifest(self.config.base_dir)
-            print(f"Debug: Server manifest size: {len(server_manifest)} items")
+            # 1. 从会话中获取 remote_path
+            remote_path_str = session['remote_path']
             
-            # Compare manifests
+            # 2. 构建目标目录的完整、绝对路径
+            target_dir = (self.config.base_dir / remote_path_str).resolve()
+
+            # 3. !!! 安全检查: 确保目标目录在服务器根目录下 !!!
+            if not str(target_dir).startswith(str(self.config.base_dir.resolve())):
+                print(f"[SECURITY] Client {client_addr} attempted directory traversal: '{remote_path_str}'")
+                return False, "ERR_INVALID_PATH"
+
+            # 4. 如果目录不存在，则创建它
+            target_dir.mkdir(parents=True, exist_ok=True)
+
+            # 5. 在指定的目标目录生成服务器清单
+            server_manifest = generate_md5_manifest(target_dir) # <-- 修改: 使用目标目录
+            print(f"Debug: Server manifest size: {len(server_manifest)} items for path '{target_dir}'")
+
+            # 后续的比较逻辑完全不变...
             client_items = set(client_manifest.keys())
             server_items = set(server_manifest.keys())
             items_to_delete = server_items - client_items
             files_to_request = []
             
-            print(f"\n[Sync] ====== File Changes ======")
+            print(f"\n[Sync] ====== File Changes for '{remote_path_str}' ======") # <-- 增强日志
             print(f"  [Sync] Items to delete: {len(items_to_delete)}")
             
-            # Analyze differences
             for path in sorted(set(client_items) | server_items):
                 client_md5 = client_manifest.get(path)
                 server_md5 = server_manifest.get(path)
@@ -376,10 +390,10 @@ class SyncHandler:
                     print(f"  [Sync] Modified file: {path}")
                     files_to_request.append(path)
             
-            # Delete unnecessary files
-            self._delete_files(items_to_delete)
+            # 将目标目录传递给删除函数
+            self._delete_files(items_to_delete, target_dir) # <-- 修改: 传递目标目录
             
-            # Prepare response
+            # 后续的返回逻辑完全不变...
             if files_to_request:
                 response_data = {
                     "status": "NEEDS_FILES",
@@ -416,28 +430,26 @@ class SyncHandler:
         except IndexError:
             return False, "ERR_INVALID_CHUNK_INDEX"
             
-    def _delete_files(self, items_to_delete: set) -> None:
-        """Delete files and empty directories that are no longer needed."""
+    def _delete_files(self, items_to_delete: set, base_delete_path: Path) -> None:
+        """在指定的基础路径下删除不再需要的文件和空目录。"""
         if not items_to_delete:
             return
             
-        # Sort by path length to ensure deep items are deleted first
         sorted_items = sorted(items_to_delete, key=lambda x: len(x.split('/')), reverse=True)
         
         for path in sorted_items:
-            full_path = self.config.base_dir / path
+            full_path = base_delete_path / path
             try:
                 if full_path.is_file():
                     full_path.unlink()
                     print(f"  [Sync] Deleted: {path}")
                 elif full_path.is_dir():
-                    # Only delete empty directories
                     is_empty = not any(full_path.iterdir())
                     if is_empty:
                         full_path.rmdir()
                         print(f"  [Sync] Deleted empty directory: {path}/")
                     else:
-                        print(f"  [Sync] Keeping directory: {path}/ (contains files)")
+                        print(f"  [Sync] Keeping directory: {path}/ (contains files not managed by this client)")
             except Exception as e:
                 print(f"  [Sync] Failed to delete {path}: {e}")
 
@@ -556,10 +568,14 @@ class FileServer:
             self.server_sock.sendto(f"ERR {filename} NOT_FOUND".encode('utf-8'), client_addr)
 
     def _handle_sync_start(self, command_line: str, client_addr: tuple) -> None:
-        """Handle SYNC_START command."""
+        """Handle SYNC_START <remote_path> <num_chunks> command."""
         try:
-            total_chunks = int(command_line.split()[1])
-            if self.sync_handler.start_sync_session(client_addr, total_chunks):
+            parts = command_line.split(' ', 2) # 最多分割两次
+            remote_path = parts[1]
+            total_chunks = int(parts[2])
+
+            # 调用新的 start_sync_session 方法
+            if self.sync_handler.start_sync_session(client_addr, remote_path, total_chunks):
                 self.server_sock.sendto(b"SYNC_READY", client_addr)
             else:
                 self.server_sock.sendto(b"ERR_INVALID_START_COMMAND", client_addr)

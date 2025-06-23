@@ -7,6 +7,32 @@ from pathlib import Path
 import hashlib # <-- 新增
 import json    # <-- 新增
 
+# ===============================================================================
+# Configuration Management - START
+# ===============================================================================
+
+CONFIG_FILE = "sync_config.json"
+
+def load_sync_config() -> list:
+    """从配置文件加载同步对。"""
+    if not Path(CONFIG_FILE).is_file():
+        return []
+    try:
+        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except (json.JSONDecodeError):
+        print(f"[WARNING] Could not parse {CONFIG_FILE}. Starting with empty config.")
+        return []
+
+def save_sync_config(config: list):
+    """将同步对保存到配置文件。"""
+    with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+        json.dump(config, f, indent=2)
+
+# ===============================================================================
+# Configuration Management - END
+# ===============================================================================
+
 # Create client_files directory at program start
 Path("client_files").mkdir(exist_ok=True)
 
@@ -183,12 +209,10 @@ def handle_super_upload(sock, server_address, local_folder_path):
                 print(f"[WARNING] Server not ready for '{rel_path}', skipping.")
                 continue
 
-            if _perform_upload(sock, server_address, file_path, rel_path):
-                response_str, _ = sendAndReceive(sock, "UPLOAD_DONE", server_address)
-                if response_str != "UPLOAD_COMPLETE":
-                    print(f"[WARNING] Unexpected response for '{rel_path}': {response_str}")
-            else:
-                print(f"[ERROR] Failed to upload '{rel_path}'")
+            # _perform_upload 现在处理完整的上传握手，无需额外操作
+            # 我们给它传递 verbose=False 来减少输出
+            if not _perform_upload(sock, server_address, file_path, rel_path, verbose=False):
+                 print(f"[ERROR] Failed to upload '{rel_path}'")
 
         # Complete the upload
         response_str, _ = sendAndReceive(sock, "SUPLOAD_COMPLETE", server_address)
@@ -203,9 +227,11 @@ def handle_super_upload(sock, server_address, local_folder_path):
 class SyncManager:
     """Manages file synchronization between client and server."""
     
-    def __init__(self, sock, server_address):
+    def __init__(self, sock, server_address, local_path: str, remote_path: str):
         self.sock = sock
         self.server_address = server_address
+        self.local_path = Path(local_path)   # <-- 新增: 本地同步路径
+        self.remote_path = remote_path       # <-- 新增: 远程同步路径
         self.chunk_size = 1024
         self.sync_interval = 3  # seconds
         
@@ -221,8 +247,8 @@ class SyncManager:
                      for i in range(0, len(manifest_payload), self.chunk_size)]
             num_chunks = len(chunks)
 
-            # Start sync session
-            response, _ = sendAndReceive(self.sock, f"SYNC_START {num_chunks}", self.server_address)
+            # 使用 self.remote_path 告知服务器要同步哪个目录
+            response, _ = sendAndReceive(self.sock, f"SYNC_START {self.remote_path} {num_chunks}", self.server_address)
             if response != "SYNC_READY":
                 raise Exception(f"Server not ready for sync. Response: {response}")
 
@@ -281,8 +307,8 @@ class SyncManager:
                 if files_to_upload:
                     print(f" -> Server needs {len(files_to_upload)} file(s). Starting sync upload...")
                     for file_path_str in files_to_upload:
-                        # 对于同步，我们只关心 client_files 目录下的文件
-                        local_path = Path("client_files") / file_path_str
+                        # 使用 self.local_path 作为基础路径，而不是写死的 "client_files"
+                        local_path = self.local_path / file_path_str
                         if local_path.is_file():
                             print(f"    - Syncing '{file_path_str}'...", end='')
                             # 调用核心上传函数，但设置 verbose=False 来禁止详细输出
@@ -299,19 +325,24 @@ class SyncManager:
             print(f"\n[WARNING] Received unexpected response from server: {response}")
 
     def sync_cycle(self) -> bool:
-        """Execute one complete sync cycle."""
+        """为 self.local_path 和 self.remote_path 执行一个同步周期。"""
         try:
-            print("\n------------------ New Sync Cycle Started ------------------")
-            
-            # Generate and transfer manifest
+            # 打印当前正在同步的路径对
+            print(f"\n--- Syncing Local: '{self.local_path}' <==> Server: '{self.remote_path}' ---")
+
+            if not self.local_path.is_dir():
+                print(f"[ERROR] Local directory '{self.local_path}' not found or is not a directory. Skipping.")
+                return False
+
             print(" -> Step 1/3: Generating local MD5 manifest...")
-            manifest = self.generate_md5_manifest("client_files")
+            # 使用 self.local_path 来生成清单
+            manifest = self.generate_md5_manifest(str(self.local_path))
             
+            # 后续逻辑与原来相同...
             print(" -> Step 2/3: Transferring manifest to server...")
             if not self.transfer_manifest(manifest):
                 return False
 
-            # Get server response and process
             print(" -> Step 3/3: Processing server's file request list...")
             response, _ = sendAndReceive(self.sock, "SYNC_FINISH", self.server_address)
             self.process_server_response(response)
@@ -325,33 +356,41 @@ class SyncManager:
             return False
 
     def start_sync_mode(self):
-        """Start continuous sync mode with periodic cycles."""
-        print("\n[SYNC MODE ACTIVATED]")
-        print("Client will now sync with the server every 3 seconds.")
-        print("按下Enter键退出sync模式，默认继续同步。")
+        """为所有在配置文件中的项启动持续同步模式。"""
+        print("\n[AUTO SYNC MODE ACTIVATED]")
+        print("Client will now sync ALL configured pairs every cycle.")
+        print("按下Enter键退出sync模式。")
         
         while True:
             try:
-                if not self.sync_cycle():
-                    print("Waiting 3 seconds before retrying...")
-                    time.sleep(self.sync_interval)
-                    continue
+                config = load_sync_config()
+                if not config:
+                    print("No sync pairs configured. Exiting auto-sync mode.")
+                    break
+
+                print(f"\n======= Starting New Auto-Sync Run ({time.ctime()}) =======")
+                for item in config:
+                    # 动态地更新实例的路径，然后运行同步周期
+                    self.local_path = Path(item['local_path'])
+                    self.remote_path = item['remote_path']
+                    self.sync_cycle()
+                print(f"======= Auto-Sync Run Finished =======")
 
                 # Countdown to next sync
-                for i in range(self.sync_interval, 0, -1):
-                    print(f'\rNext sync in {i} seconds...  ', end='')
+                for i in range(self.sync_interval * len(config), 0, -1): # 等待时间可以适当延长
+                    print(f'\rNext run in {i} seconds...  ', end='')
                     time.sleep(1)
                 print('\r' + ' ' * 60 + '\r', end='')
+                
+                # 退出检测逻辑保持不变
                 import sys, select
-                print("press Enter to exit sync mode: ", end='', flush=True)
-                i, o, e = select.select([sys.stdin], [], [], 0.5)
-                if i:
+                if sys.stdin in select.select([sys.stdin], [], [], 0)[0]:
                     _ = sys.stdin.readline()
                     print("\n[SYNC MODE DEACTIVATED] (检测到Enter) Returning to command menu.")
                     break
             except Exception as e:
-                print(f"\n[ERROR] An error occurred during sync cycle: {e}")
-                print("Waiting 3 seconds before retrying...")
+                print(f"\n[ERROR] An error occurred during auto-sync loop: {e}")
+                print(f"Waiting {self.sync_interval} seconds before retrying...")
                 time.sleep(self.sync_interval)
 
 def download_file(filename, server_host, server_info):
@@ -417,6 +456,13 @@ def display_command_menu():
     return input("""
     *！COMMAND MENU ! ^^^^^check the available entries on server^^^^
     ********************************************
+    * sync list                    - Show all configured sync pairs
+    * sync add <local> <remote>    - Add a new folder pair to sync 
+    [WARNING: Never map different local folders (local_path) to a single remote folder (remote_path)]
+    * sync remove <id>             - Remove a sync pair by its ID
+    * sync run                     - Run a one-time sync for all pairs
+    * sync auto                    - Start continuous automatic syncing
+    ********************************************
     * sync                         - !!!SYNC MODE!!!
     * <filename>                   - Download a file by entering its name
     * all                          - Download all files in the current directory
@@ -429,22 +475,85 @@ def display_command_menu():
 
     Enter command: """)
 
+def handle_sync_subcommands(sock, server_address, args):
+    """处理所有 'sync' 子命令，如 list, add, run。"""
+    if not args:
+        print("\n[ERROR] Sync command requires a subcommand. Use 'sync list' to see options.")
+        return
+
+    subcommand = args[0].lower()
+    config = load_sync_config()
+
+    if subcommand == 'list':
+        if not config:
+            print("\nNo sync pairs configured. Use 'sync add <local_path> <remote_path>' to add one.")
+            return
+        print("\n--- Configured Sync Pairs ---")
+        for item in sorted(config, key=lambda x: x['id']):
+            print(f"  ID: {item['id']:<3} Local: '{item['local_path']}'  ==>  Remote: '{item['remote_path']}'")
+        print("-----------------------------")
+
+    elif subcommand == 'add' and len(args) == 3:
+        local_path, remote_path = args[1], args[2]
+        if not Path(local_path).is_dir():
+            print(f"\n[ERROR] Local path '{local_path}' is not a valid directory.")
+            return
+        new_id = max([item['id'] for item in config] + [0]) + 1
+        config.append({"id": new_id, "local_path": local_path, "remote_path": remote_path})
+        save_sync_config(config)
+        print(f"\n[SUCCESS] Added sync pair (ID: {new_id}).")
+
+    elif subcommand == 'remove' and len(args) == 2:
+        try:
+            remove_id = int(args[1])
+            new_config = [item for item in config if item['id'] != remove_id]
+            if len(new_config) == len(config):
+                print(f"\n[ERROR] No sync pair found with ID: {remove_id}")
+            else:
+                save_sync_config(new_config)
+                print(f"\n[SUCCESS] Removed sync pair with ID: {remove_id}")
+        except ValueError:
+            print("\n[ERROR] Please provide a valid numeric ID to remove.")
+
+    elif subcommand == 'run':
+        if not config:
+            print("\nNo sync pairs to run.")
+            return
+        print("\nStarting manual sync run...")
+        for item in config:
+            # 为每个同步任务创建一个临时的 SyncManager 实例并运行
+            sync_manager = SyncManager(sock, server_address, item['local_path'], item['remote_path'])
+            sync_manager.sync_cycle()
+
+    elif subcommand == 'auto':
+        # 创建一个 SyncManager 实例来启动自动同步模式
+        # 初始路径不重要，因为会在循环中被覆盖
+        sync_manager = SyncManager(sock, server_address, "", "")
+        sync_manager.start_sync_mode()
+        
+    else:
+        print(f"\n[ERROR] Unknown sync subcommand or incorrect arguments: '{' '.join(args)}'")
+        print("Usage: sync <list|add|remove|run|auto>")
+
 def handle_command(sock, server_address, command, files, server_host):
     if not command:
         return False
         
-    if command.lower().startswith('cd '):
+    parts = command.split() # 不转小写，以保留路径的大小写
+    base_command = parts[0].lower()
+
+    if base_command == 'cd':
         handle_cd_command(sock, server_address, command)
-    elif command.lower().startswith('upload '):
+    elif base_command == 'upload':
         handle_upload(sock, server_address, command.split(' ', 1)[1])
-    elif command.lower().startswith('supload '):
+    elif base_command == 'supload':
         handle_super_upload(sock, server_address, command.split(' ', 1)[1])
-    elif command.lower() == 'sync':
-        sync_manager = SyncManager(sock, server_address)
-        sync_manager.start_sync_mode()
-    elif command.lower() == 'kill':
+    elif base_command == 'sync':
+        # 将参数传递给新的子命令处理器
+        handle_sync_subcommands(sock, server_address, parts[1:])
+    elif base_command == 'kill':
         handle_kill_command(sock, server_address)
-    elif command.lower() == 'all':
+    elif base_command == 'all':
         handle_all_command(sock, server_address, files, server_host)
     else:
         handle_single_download(sock, server_address, command, server_host)
