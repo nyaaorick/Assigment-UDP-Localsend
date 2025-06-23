@@ -69,51 +69,25 @@ class ServerConfig:
     upload_buffer_size: int = 4096
 
     @classmethod
-    def from_args(cls, default_port: int) -> 'ServerConfig':
-        """Create config from command line arguments"""
+    def from_args(cls) -> 'ServerConfig':
+        """Create config from command line arguments, using the class's default port."""
         if len(sys.argv) == 1:
-            print(f"[INFO] No port provided. Using default port: {default_port}")
-            return cls(default_port=default_port)
+            # 直接使用类中定义的默认端口
+            print(f"[INFO] No port provided. Using default port: {cls.default_port}")
+            return cls()  # 无需传入参数，它会使用数据类中定义的默认值
         elif len(sys.argv) == 2:
             try:
                 port = int(sys.argv[1])
                 print(f"[INFO] Port specified by user: {port}")
+                # 创建实例时覆盖默认端口
                 return cls(default_port=port)
             except ValueError:
-                print(f"[ERROR] Invalid port '{sys.argv[1]}'. Port must be a number.")
+                # 将错误信息输出到标准错误流，这是更好的实践
+                print(f"[ERROR] Invalid port '{sys.argv[1]}'. Port must be a number.", file=sys.stderr)
                 sys.exit(1)
         else:
-            print("[ERROR] Too many arguments.")
-            print("Usage: python3 server.py [port]")
+            print("[ERROR] Too many arguments. Usage: python3 server.py [port]", file=sys.stderr)
             sys.exit(1)
-
-def get_port_from_args(default_port):
-    """
-    Get port number from command line arguments.
-    - If no arguments provided, returns default port
-    - If one valid argument provided, returns that port
-    - If invalid or too many arguments, prints error and exits
-    """
-    if len(sys.argv) == 1:
-        print(f"[INFO] No port provided. Using default port: {default_port}")
-        return default_port
-    elif len(sys.argv) == 2:
-        try:
-            port = int(sys.argv[1])
-            print(f"[INFO] Port specified by user: {port}")
-            return port
-        except ValueError:
-            print(f"[ERROR] Invalid port '{sys.argv[1]}'. Port must be a number.")
-            sys.exit(1)
-    else:
-        print("[ERROR] Too many arguments.")
-        print("Usage: python3 server.py [port]")
-        sys.exit(1)
-
-### MODIFICATION START: 1. 定义服务器的根目录 ###
-# 将根目录定义为一个全局常量，方便引用
-SERVER_BASE_DIR = os.path.realpath("serverfile")
-### MODIFICATION END ###
 
 class FileTransferHandler:
     """Handles file transfer operations"""
@@ -658,7 +632,7 @@ class FileServer:
 
 if __name__ == "__main__":
     # Create server configuration
-    config = ServerConfig.from_args(51234)
+    config = ServerConfig.from_args()
     
     # Create and start server
     server = FileServer(config)
